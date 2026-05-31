@@ -1,0 +1,34 @@
+[package]
+name = "backend"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+argon2.workspace = true
+hmac.workspace = true
+md5.workspace = true
+sha2.workspace = true
+axum.workspace = true
+chrono.workspace = true
+jsonwebtoken.workspace = true
+redis.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
+uuid.workspace = true
+validator.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+hyper = "1"
