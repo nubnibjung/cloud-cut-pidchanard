@@ -1,11 +1,12 @@
-import { CommandManager } from '../../state/commands/CommandManager';
+import { commandManager } from '../../state/commandManager';
+export { commandManager };
 
-export const commandManager = new CommandManager();
+import type { Command } from '../../state/commands/CommandManager';
 
 export function UndoHistory() {
   return (
     <div className="text-xs">
-      {commandManager.getHistory().map((command) => (
+      {commandManager.getHistory().map((command: Command) => (
         <button key={command.id} className="block w-full truncate text-left">{command.description}</button>
       ))}
     </div>

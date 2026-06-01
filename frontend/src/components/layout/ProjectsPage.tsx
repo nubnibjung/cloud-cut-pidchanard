@@ -23,6 +23,7 @@ export function ProjectsPage({ onOpen }: Props) {
   const [renameValue, setRenameValue] = useState('');
   // context menu
   const [menuId, setMenuId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ProjectSummary | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -60,7 +61,8 @@ export function ProjectsPage({ onOpen }: Props) {
 
   const handleCreateWs = async () => {
     if (!newWsName.trim()) return;
-    const slug = newWsName.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    const base = newWsName.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'ws';
+    const slug = `${base}-${crypto.randomUUID().slice(0, 6)}`;
     try {
       const ws = await createWorkspace(newWsName.trim(), slug);
       setWorkspaces((prev) => [...prev, ws]);
@@ -86,12 +88,17 @@ export function ProjectsPage({ onOpen }: Props) {
     } catch (err) { setError(String(err)); }
   };
 
-  const handleDelete = async (id: string) => {
+  const requestDelete = (project: ProjectSummary) => {
     setMenuId(null);
-    if (!confirm('Delete this project? This cannot be undone.')) return;
+    setDeleteTarget(project);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await api(`/projects/${id}`, { method: 'DELETE' });
-      setProjects((prev) => prev.filter((p) => p.id !== id));
+      await api(`/projects/${deleteTarget.id}`, { method: 'DELETE' });
+      setProjects((prev) => prev.filter((p) => p.id !== deleteTarget.id));
+      setDeleteTarget(null);
     } catch (err) { setError(String(err)); }
   };
 
@@ -175,7 +182,12 @@ export function ProjectsPage({ onOpen }: Props) {
                 <div key={project.id} className="group relative rounded-xl border border-border bg-[#151820] transition-all hover:border-accent/40 hover:bg-[#1a1f2b]">
                   {/* Thumbnail — click to open */}
                   <button className="w-full p-4 text-left" onClick={() => onOpen(project.id, project.workspace_id)}>
-                    <div className="mb-3 aspect-video rounded-lg bg-[#0d0f14]" />
+                    {(() => {
+                      const thumb = localStorage.getItem(`thumbnail_project_${project.id}`);
+                      return thumb
+                        ? <img src={thumb} alt="" className="mb-3 aspect-video w-full rounded-lg object-cover" />
+                        : <div className="mb-3 aspect-video rounded-lg bg-[#0d0f14]" />;
+                    })()}
                   </button>
 
                   {/* Name row */}
@@ -221,7 +233,7 @@ export function ProjectsPage({ onOpen }: Props) {
                           </button>
                           <button
                             className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-red-900/20"
-                            onClick={() => handleDelete(project.id)}
+                            onClick={() => requestDelete(project)}
                           >
                             <Trash2 className="h-3.5 w-3.5" /> Delete
                           </button>
@@ -237,6 +249,38 @@ export function ProjectsPage({ onOpen }: Props) {
           )}
         </main>
       </div>
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-sm rounded-lg border border-border bg-[#151820] p-5 shadow-2xl">
+            <div className="mb-4 flex items-start gap-3">
+              <div className="rounded bg-red-500/10 p-2 text-red-400">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-semibold text-white">Delete project?</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  This will permanently delete <span className="font-medium text-slate-200">{deleteTarget.name}</span>. This cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                className="rounded border border-border px-3 py-1.5 text-sm text-slate-300 hover:bg-white/5"
+                onClick={() => setDeleteTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500"
+                onClick={confirmDelete}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

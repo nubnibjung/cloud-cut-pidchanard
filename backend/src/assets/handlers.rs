@@ -45,6 +45,7 @@ pub struct ConfirmUpload {
     asset_type: String,
     original_url: String,
     idempotency_key: String,
+    duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,35 +98,48 @@ pub async fn confirm_upload(
     }
 
     let mut tx = state.pool.begin().await?;
+
+    // If the client already probed the duration, mark ready immediately and skip extraction job
+    let (status, metadata) = if let Some(ms) = input.duration_ms {
+        ("ready", json!({ "duration_ms": ms }))
+    } else {
+        ("processing", json!({}))
+    };
+
     let asset_id = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO assets (project_id, uploaded_by, type, original_url, status)
-         VALUES ($1, $2, $3, $4, 'processing')
+        "INSERT INTO assets (project_id, uploaded_by, type, original_url, status, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id",
     )
     .bind(input.project_id)
     .bind(auth.id)
     .bind(&input.asset_type)
     .bind(&input.original_url)
+    .bind(status)
+    .bind(&metadata)
     .fetch_one(&mut *tx)
     .await?;
 
-    sqlx::query(
-        "INSERT INTO processing_jobs (kind, status, payload, idempotency_key)
-         VALUES ('extract_metadata', 'queued', $1, $2)
-         ON CONFLICT (idempotency_key) DO NOTHING",
-    )
-    .bind(json!({
-        "kind": "ExtractMetadata",
-        "asset_id": asset_id,
-        "input_url": input.original_url,
-        "idempotency_key": input.idempotency_key
-    }))
-    .bind(format!("asset:{asset_id}:metadata"))
-    .execute(&mut *tx)
-    .await?;
+    // Only queue metadata extraction if we don't already have duration
+    if input.duration_ms.is_none() {
+        sqlx::query(
+            "INSERT INTO processing_jobs (kind, status, payload, idempotency_key)
+             VALUES ('extract_metadata', 'queued', $1, $2)
+             ON CONFLICT (idempotency_key) DO NOTHING",
+        )
+        .bind(json!({
+            "kind": "ExtractMetadata",
+            "asset_id": asset_id,
+            "input_url": input.original_url,
+            "idempotency_key": input.idempotency_key
+        }))
+        .bind(format!("asset:{asset_id}:metadata"))
+        .execute(&mut *tx)
+        .await?;
+    }
 
     tx.commit().await?;
-    Ok(Json(AssetCreated { asset_id, status: "processing".to_string() }))
+    Ok(Json(AssetCreated { asset_id, status: status.to_string() }))
 }
 
 pub async fn list_assets(

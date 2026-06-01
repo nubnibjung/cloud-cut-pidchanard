@@ -36,7 +36,7 @@ export function PlayerControls({ totalMs = 60000 }: Props) {
         onClick={toggleMute}
         title={isMuted ? 'Unmute' : 'Mute'}
       >
-        {isMuted ? <VolumeX className="h-4 w-4 text-yellow-400" /> : <Volume2 className="h-4 w-4" />}
+        {(isMuted || volume === 0) ? <VolumeX className="h-4 w-4 text-yellow-400" /> : <Volume2 className="h-4 w-4" />}
       </button>
 
       {/* Volume */}
@@ -44,7 +44,12 @@ export function PlayerControls({ totalMs = 60000 }: Props) {
         type="range" min={0} max={1} step={0.01}
         value={isMuted ? 0 : volume}
         className="w-20 accent-accent"
-        onChange={(e) => { setVolume(Number(e.target.value)); if (isMuted) toggleMute(); }}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setVolume(v);
+          if (isMuted && v > 0) toggleMute();
+          if (!isMuted && v === 0) toggleMute();
+        }}
       />
     </div>
   );

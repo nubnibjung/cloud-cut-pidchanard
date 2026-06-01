@@ -1,5 +1,6 @@
 pub mod app;
 pub mod assets;
+pub mod worker;
 pub mod auth;
 pub mod collaboration;
 pub mod config;

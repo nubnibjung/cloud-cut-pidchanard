@@ -23,10 +23,10 @@ export function TimelineRuler({ durationMs }: { durationMs: number }) {
 
   return (
     <div
-      className="sticky top-0 z-10 grid h-7 grid-cols-[96px_1fr] border-b border-border bg-[#14171d]"
-      style={{ minWidth: 96 + totalWidth }}
+      className="sticky top-0 z-10 grid h-7 grid-cols-[120px_1fr] border-b border-border bg-[#14171d]"
+      style={{ minWidth: 120 + totalWidth }}
     >
-      <div className="border-r border-border" />
+      <div className="sticky left-0 z-[5] border-r border-border bg-[#14171d]" />
       <div className="relative text-[10px] text-slate-500 select-none">
         {Array.from({ length: count }, (_, i) => {
           const ms = i * majorStep;

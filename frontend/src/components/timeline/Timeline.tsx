@@ -1,11 +1,11 @@
 import { Layers, Minus, Plus, Split, Trash2 } from 'lucide-react';
-import { MouseEvent, useEffect } from 'react';
+import { MouseEvent, useEffect, useRef } from 'react';
 import { api } from '../../services/api';
 import { useProjectStore } from '../../state/projectStore';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { useUIStore } from '../../state/uiStore';
-import { formatTimecode } from '../../utils/timecode';
-import type { Track } from '../../types';
+import { commandManager } from '../../state/commandManager';
+import { formatTimecode, msToPixels } from '../../utils/timecode';
 import { Playhead } from './Playhead';
 import { SnapGuide } from './SnapGuide';
 import { TimelineRuler } from './TimelineRuler';
@@ -23,6 +23,15 @@ export function Timeline() {
   const { selectedClipIds, zoomLevel, setZoom, deselectAll } = useUIStore();
   const { currentTimeMs, isPlaying, play, pause, seek, setSpeed } = usePlaybackStore();
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const prevZoomRef = useRef(zoomLevel);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || prevZoomRef.current === zoomLevel) return;
+    el.scrollLeft = el.scrollLeft * (zoomLevel / prevZoomRef.current);
+    prevZoomRef.current = zoomLevel;
+  }, [zoomLevel]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const tag = (event.target as HTMLElement).tagName;
@@ -37,6 +46,16 @@ export function Timeline() {
         case 'Space':
           event.preventDefault();
           isPlaying ? pause() : play();
+          break;
+        case 'KeyZ':
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            if (event.shiftKey) commandManager.redo();
+            else commandManager.undo();
+          }
+          break;
+        case 'KeyY':
+          if (event.ctrlKey || event.metaKey) { event.preventDefault(); commandManager.redo(); }
           break;
         case 'Digit0':
           if (event.ctrlKey || event.metaKey) { event.preventDefault(); setZoom(12); }
@@ -62,6 +81,18 @@ export function Timeline() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [clips, currentTimeMs, deleteClips, isPlaying, pause, play, seek, selectedClipIds, setSpeed, setZoom, splitClip]);
 
+  useEffect(() => {
+    const preventDefault = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', preventDefault, true);
+    window.addEventListener('drop', preventDefault, true);
+    return () => {
+      window.removeEventListener('dragover', preventDefault, true);
+      window.removeEventListener('drop', preventDefault, true);
+    };
+  }, []);
+
   const createDefaultTracks = async () => {
     if (!project) return;
     for (let i = 0; i < DEFAULT_TRACKS.length; i++) {
@@ -82,6 +113,18 @@ export function Timeline() {
     (max, c) => Math.max(max, c.track_position_ms + c.duration_ms),
     60000,
   );
+  const orderedTracks = [...tracks].sort((a, b) => {
+    const typeRank = (t: typeof a) => t.type === 'video' ? 0 : 1;
+    if (typeRank(a) !== typeRank(b)) return typeRank(a) - typeRank(b);
+    return a.label.localeCompare(b.label, undefined, { numeric: true });
+  });
+
+  const majorStep =
+    zoomLevel >= 40 ? 1000 :
+    zoomLevel >= 20 ? 2000 :
+    zoomLevel >= 10 ? 5000 :
+    zoomLevel >= 4  ? 10000 : 30000;
+  const totalWidth = msToPixels(totalDurationMs + majorStep, zoomLevel);
 
   return (
     <section className="flex h-full flex-col bg-[#14171d]">
@@ -97,10 +140,22 @@ export function Timeline() {
               <Layers className="h-3.5 w-3.5" /> Add tracks
             </button>
           )}
-          <button title="Zoom out" className="rounded border border-border p-1.5 hover:bg-white/5" onClick={() => setZoom(zoomLevel - 2)}><Minus className="h-4 w-4" /></button>
-          <button title="Zoom in" className="rounded border border-border p-1.5 hover:bg-white/5" onClick={() => setZoom(zoomLevel + 2)}><Plus className="h-4 w-4" /></button>
-          <button title="Split (S)" className="rounded border border-border p-1.5 hover:bg-white/5" onClick={() => selectedClipIds[0] && splitClip(selectedClipIds[0], currentTimeMs)}><Split className="h-4 w-4" /></button>
-          <button title="Delete (Del)" className="rounded border border-border p-1.5 hover:bg-white/5" onClick={() => deleteClips(selectedClipIds)}><Trash2 className="h-4 w-4" /></button>
+          <button title="Zoom out (scroll ← )" className="rounded border border-border p-1.5 hover:bg-white/5" onClick={() => setZoom(Math.max(2, zoomLevel - 2))}><Minus className="h-4 w-4" /></button>
+          <button title="Zoom in (scroll → )" className="rounded border border-border p-1.5 hover:bg-white/5" onClick={() => setZoom(Math.min(80, zoomLevel + 2))}><Plus className="h-4 w-4" /></button>
+          <button
+            title={selectedClipIds.length ? 'Split at playhead (S)' : 'Select a clip first to split'}
+            className={['rounded border p-1.5 transition-colors', selectedClipIds.length ? 'border-border hover:bg-white/5 text-white' : 'border-border/40 text-slate-600 cursor-not-allowed'].join(' ')}
+            onClick={() => { if (selectedClipIds[0]) splitClip(selectedClipIds[0], currentTimeMs); }}
+          >
+            <Split className="h-4 w-4" />
+          </button>
+          <button
+            title={selectedClipIds.length ? `Delete ${selectedClipIds.length} clip(s) (Del)` : 'Select a clip first to delete'}
+            className={['rounded border p-1.5 transition-colors', selectedClipIds.length ? 'border-red-800/60 text-red-400 hover:bg-red-900/20' : 'border-border/40 text-slate-600 cursor-not-allowed'].join(' ')}
+            onClick={() => { if (selectedClipIds.length) deleteClips(selectedClipIds); }}
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
         </div>
       </div>
 
@@ -118,12 +173,16 @@ export function Timeline() {
           )}
         </div>
       ) : (
-        <div className="relative min-h-0 flex-1 overflow-auto" onClick={deselectFromBackground}>
+        <div ref={scrollRef} className="timeline-scroll relative min-h-0 flex-1 overflow-auto" onClick={deselectFromBackground}>
           <TimelineRuler durationMs={totalDurationMs} />
-          <div className="relative" onClick={deselectFromBackground}>
+          <div
+            className="relative"
+            style={{ minWidth: 120 + totalWidth }}
+            onClick={deselectFromBackground}
+          >
             <Playhead />
             <SnapGuide />
-            {tracks.map((track) => (
+            {orderedTracks.map((track) => (
               <TimelineTrack
                 key={track.id}
                 track={track}

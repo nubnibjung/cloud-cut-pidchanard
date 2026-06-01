@@ -7,162 +7,220 @@ import type { Clip } from '../../types';
 import { snapTime } from '../../utils/geometry';
 import { formatTimecode, msToPixels, pixelsToMs } from '../../utils/timecode';
 
-interface Props { clip: Clip; trackMuted?: boolean }
+interface Props { clip: Clip; trackColor?: string; trackMuted?: boolean }
 type Mode = 'move' | 'trim-left' | 'trim-right';
+type StartDragEvent = React.PointerEvent | React.MouseEvent;
 
-export function TimelineClip({ clip, trackMuted }: Props) {
-  const { clips, moveClip, trimClip, deleteClips } = useProjectStore();
+export function TimelineClip({ clip, trackColor = '#4a90d9', trackMuted }: Props) {
+  const { clips, deleteClips, updateClip } = useProjectStore();
   const { selectedClipIds, selectClip, zoomLevel, snapEnabled } = useUIStore();
   const currentTimeMs = usePlaybackStore((s) => s.currentTimeMs);
-
-  // local visual state during drag (don't touch store until drop)
-  const [dragPos, setDragPos] = useState<{ left: number; width: number } | null>(null);
-
-  const dragRef = useRef<{
-    mode: Mode;
-    startX: number;
-    startPositionMs: number;
-    startInMs: number;
-    startOutMs: number;
-    startTrackId: string;
-  } | null>(null);
-
   const isSelected = selectedClipIds.includes(clip.id);
-  const baseLeft  = msToPixels(clip.track_position_ms, zoomLevel);
-  const baseWidth = Math.max(16, msToPixels(clip.duration_ms, zoomLevel));
 
-  const visLeft  = dragPos?.left  ?? baseLeft;
-  const visWidth = dragPos?.width ?? baseWidth;
+  const elRef   = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const [active, setActive] = useState(false);   // only for cursor class
 
-  /* ── find track under pointer ────────────────────────────────────────── */
-  const trackIdAt = (x: number, y: number): string | undefined => {
-    const el = document.querySelector(`[data-clip-id="${clip.id}"]`) as HTMLElement | null;
-    if (el) el.style.pointerEvents = 'none';
-    const hit = document.elementFromPoint(x, y);
-    if (el) el.style.pointerEvents = '';
-    return (hit?.closest('[data-track-id]') as HTMLElement | null)?.dataset.trackId;
+  /* always-fresh refs — closures read these so they never go stale */
+  const clipsRef = useRef(clips);        clipsRef.current  = clips;
+  const snapRef  = useRef(snapEnabled);  snapRef.current   = snapEnabled;
+  const timeRef  = useRef(currentTimeMs); timeRef.current  = currentTimeMs;
+  const zoomRef  = useRef(zoomLevel);    zoomRef.current   = zoomLevel;
+
+  const left  = msToPixels(clip.track_position_ms, zoomLevel);
+  const width = Math.max(16, msToPixels(clip.duration_ms, zoomLevel));
+
+  /* ── helper: which track row is under pointer ──────────────────────── */
+  const trackUnder = (_x: number, y: number) => {
+    const trackElements = Array.from(document.querySelectorAll('[data-track-id]')) as HTMLElement[];
+    let bestTrackId: string | undefined = undefined;
+    let minDistance = Number.POSITIVE_INFINITY;
+    for (const trackEl of trackElements) {
+      const rect = trackEl.getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) return trackEl.dataset.trackId;
+      const distance = Math.min(Math.abs(y - rect.top), Math.abs(y - rect.bottom));
+      if (distance < minDistance) { minDistance = distance; bestTrackId = trackEl.dataset.trackId; }
+    }
+    return bestTrackId;
   };
 
-  /* ── pointer down ────────────────────────────────────────────────────── */
-  const onDown = (e: React.PointerEvent, mode: Mode) => {
+  /* ── start drag — manipulates DOM directly, zero React re-renders ── */
+  const startDrag = (e: StartDragEvent, mode: Mode) => {
+    if (e.button !== 0) return;
+    if (draggingRef.current) return;
+    draggingRef.current = true;
+    e.preventDefault();
     e.stopPropagation();
+
+    const el = elRef.current;
+    if (!el) return;
+
+    // Set z-index immediately via DOM — don't wait for React re-render
+    el.style.zIndex = '20';
+    el.style.opacity = '0.85';
+    document.body.style.cursor = mode === 'move' ? 'grabbing' : 'ew-resize';
+    document.body.style.userSelect = 'none';
+
     if (mode === 'move') selectClip(clip.id, e.shiftKey);
-    dragRef.current = {
-      mode,
-      startX: e.clientX,
-      startPositionMs: clip.track_position_ms,
-      startInMs: clip.in_point_ms,
-      startOutMs: clip.out_point_ms,
-      startTrackId: clip.track_id,
+    setActive(true);
+
+    const z       = zoomRef.current;
+    const startX  = e.clientX;
+    const startY  = e.clientY;
+    /* snapshot of clip data at drag start */
+    const basePos = clip.track_position_ms;
+    const baseIn  = clip.in_point_ms;
+    const baseOut = clip.out_point_ms;
+
+    /* set correct cursor on body so it stays while outside element */
+    document.body.style.cursor = mode === 'move' ? 'grabbing' : 'ew-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (mv: PointerEvent | MouseEvent) => {
+      mv.preventDefault();
+      const dxPx = mv.clientX - startX;
+      const dxMs = pixelsToMs(dxPx, z);
+
+      if (mode === 'move') {
+        const raw = Math.max(0, basePos + dxMs);
+        const { timeMs } = snapRef.current
+          ? snapTime(raw, clipsRef.current.filter((c) => c.id !== clip.id), timeRef.current)
+          : { timeMs: raw };
+        
+        const visualDx = msToPixels(timeMs, z) - left;
+        const visualDy = mv.clientY - startY;
+        el.style.transform = `translate(${visualDx}px, ${visualDy}px)`;
+
+      } else if (mode === 'trim-left') {
+        const newIn  = Math.max(0, Math.min(baseIn + dxMs, baseOut - 500));
+        const newPos = basePos + (newIn - baseIn);
+        const newDur = baseOut - newIn;
+        
+        const visualDx = msToPixels(Math.max(0, newPos), z) - left;
+        el.style.transform = `translateX(${visualDx}px)`;
+        el.style.width = `${Math.max(16, msToPixels(newDur, z))}px`;
+
+      } else {
+        const newOut = Math.max(baseIn + 500, baseOut + dxMs);
+        el.style.width = `${Math.max(16, msToPixels(newOut - baseIn, z))}px`;
+      }
     };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  };
 
-  /* ── pointer move — update local visual only ─────────────────────────── */
-  const onMove = (e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d) return;
-    const deltaMs = pixelsToMs(e.clientX - d.startX, zoomLevel);
+    const finishDrag = (up: PointerEvent | MouseEvent) => {
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', finishDrag, true);
+      document.removeEventListener('pointercancel', finishDrag, true);
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('mouseup', finishDrag, true);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      draggingRef.current = false;
+      setActive(false);
 
-    if (d.mode === 'move') {
-      const raw = Math.max(0, d.startPositionMs + deltaMs);
-      const { timeMs } = snapEnabled && !e.altKey
-        ? snapTime(raw, clips.filter((c) => c.id !== clip.id), currentTimeMs)
-        : { timeMs: raw };
-      setDragPos({ left: msToPixels(timeMs, zoomLevel), width: visWidth });
+      const newTrack = trackUnder(up.clientX, up.clientY);
 
-    } else if (d.mode === 'trim-left') {
-      const newIn  = Math.max(0, Math.min(d.startInMs + deltaMs, d.startOutMs - 500));
-      const newDur = d.startOutMs - newIn;
-      const newPos = d.startPositionMs + (newIn - d.startInMs);
-      setDragPos({ left: msToPixels(Math.max(0, newPos), zoomLevel), width: Math.max(16, msToPixels(newDur, zoomLevel)) });
+      /* reset DOM so React takes over again */
+      el.style.left  = '';
+      el.style.width = '';
+      el.style.transform = '';
+      el.style.zIndex = '';
+      el.style.opacity = '';
 
-    } else {
-      const newOut = Math.max(d.startInMs + 500, d.startOutMs + deltaMs);
-      setDragPos({ left: visLeft, width: Math.max(16, msToPixels(newOut - d.startInMs, zoomLevel)) });
-    }
-  };
+      const dxMs = pixelsToMs(up.clientX - startX, z);
 
-  /* ── pointer up — commit to store + API ─────────────────────────────── */
-  const onUp = (e: React.PointerEvent) => {
-    const d = dragRef.current;
-    dragRef.current = null;
+      if (mode === 'move') {
+        const raw = Math.max(0, basePos + dxMs);
+        const { timeMs } = snapRef.current
+          ? snapTime(raw, clipsRef.current.filter((c) => c.id !== clip.id), timeRef.current)
+          : { timeMs: raw };
+        
+        updateClip(clip.id, {
+          track_position_ms: timeMs,
+          ...(newTrack && newTrack !== clip.track_id ? { track_id: newTrack } : {}),
+        });
 
-    if (!d || !dragPos) { setDragPos(null); return; }
+      } else if (mode === 'trim-left') {
+        const newIn  = Math.max(0, Math.min(baseIn + dxMs, baseOut - 500));
+        const newPos = Math.max(0, basePos + (newIn - baseIn));
+        
+        updateClip(clip.id, {
+          in_point_ms: newIn,
+          out_point_ms: baseOut,
+          track_position_ms: newPos,
+        });
 
-    const deltaMs = pixelsToMs(e.clientX - d.startX, zoomLevel);
+      } else {
+        const newOut = Math.max(baseIn + 500, baseOut + dxMs);
+        
+        updateClip(clip.id, {
+          in_point_ms: baseIn,
+          out_point_ms: newOut,
+        });
+      }
+    };
 
-    if (d.mode === 'move') {
-      const raw = Math.max(0, d.startPositionMs + deltaMs);
-      const { timeMs } = snapEnabled && !e.altKey
-        ? snapTime(raw, clips.filter((c) => c.id !== clip.id), currentTimeMs)
-        : { timeMs: raw };
-      const newTrackId = trackIdAt(e.clientX, e.clientY);
-      moveClip(clip.id, timeMs, newTrackId && newTrackId !== d.startTrackId ? newTrackId : undefined);
-
-    } else if (d.mode === 'trim-left') {
-      const newIn  = Math.max(0, Math.min(d.startInMs + deltaMs, d.startOutMs - 500));
-      const newPos = d.startPositionMs + (newIn - d.startInMs);
-      trimClip(clip.id, newIn, d.startOutMs);
-      moveClip(clip.id, Math.max(0, newPos));
-
-    } else {
-      const newOut = Math.max(d.startInMs + 500, d.startOutMs + deltaMs);
-      trimClip(clip.id, d.startInMs, newOut);
-    }
-
-    setDragPos(null);
+    /* attach SYNCHRONOUSLY — no React cycle delay */
+    document.addEventListener('pointermove', onMove, true);
+    document.addEventListener('pointerup', finishDrag, true);
+    document.addEventListener('pointercancel', finishDrag, true);
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('mouseup', finishDrag, true);
   };
 
   return (
     <div
+      ref={elRef}
       data-clip-id={clip.id}
       className={[
-        'absolute top-1 h-14 select-none rounded border text-xs',
+        'group absolute top-1 h-14 select-none touch-none rounded border text-xs overflow-hidden',
         isSelected
-          ? 'border-accent bg-[#1a3d37] ring-1 ring-accent z-10'
-          : 'border-[#3a4560] bg-[#1e2d44] hover:border-slate-500',
-        trackMuted ? 'opacity-50' : '',
-        dragPos ? 'z-20 opacity-80 cursor-grabbing shadow-xl' : 'cursor-grab',
+          ? 'border-accent/60 bg-[#1a2d4a] ring-1 ring-accent/40 z-10'
+          : 'border-[#2a3550] bg-[#18243a] hover:border-[#3a4f70] hover:bg-[#1e2d48]',
+        active ? 'z-20 opacity-80 shadow-xl' : 'cursor-grab',
+        trackMuted ? 'opacity-40 saturate-50' : '',
       ].join(' ')}
-      style={{ left: visLeft, width: visWidth }}
+      style={{ left, width }}
+      draggable={false}
+      onDragStart={(e) => e.preventDefault()}
       onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => onDown(e, 'move')}
-      onPointerMove={onMove}
-      onPointerUp={onUp}
+      onPointerDown={(e) => startDrag(e, 'move')}
+      onMouseDown={(e) => startDrag(e, 'move')}
     >
-      {/* trim-left handle */}
+      {/* left accent bar — track color */}
+      <div className="absolute left-0 top-0 bottom-0 w-0.5" style={{ backgroundColor: isSelected ? '#34d399' : trackColor }} />
+
+      {/* Trim-left */}
       <div
-        className="absolute left-0 top-0 z-10 h-full w-3 cursor-ew-resize hover:bg-accent/40"
-        onPointerDown={(e) => { e.stopPropagation(); onDown(e, 'trim-left'); }}
+        className="absolute left-0 top-0 z-10 h-full w-4 cursor-ew-resize hover:bg-white/10 flex items-center justify-center"
+        onPointerDown={(event) => { event.stopPropagation(); startDrag(event, 'trim-left'); }}
+        onMouseDown={(event) => { event.stopPropagation(); startDrag(event, 'trim-left'); }}
       >
-        <div className="absolute left-1 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded bg-white/40" />
+        <div className="h-5 w-0.5 rounded bg-white/30" />
       </div>
 
-      {/* clip content */}
-      <div className="pointer-events-none flex h-full flex-col justify-center px-4">
-        <div className="truncate font-medium text-white leading-tight">{clip.name}</div>
-        <div className="truncate text-[10px] text-slate-400">{formatTimecode(clip.duration_ms)}</div>
+      <div className="pointer-events-none flex h-full flex-col justify-center px-5">
+        <div className="truncate font-medium text-white/90 text-[11px] leading-tight">{clip.name}</div>
+        <div className="truncate text-[10px] text-slate-400/80 mt-0.5">{formatTimecode(clip.duration_ms)}</div>
       </div>
 
-      {/* delete button — top-right */}
-      {isSelected && (
-        <button
-          className="absolute right-0 top-0 z-20 flex h-5 w-5 items-center justify-center rounded-bl rounded-tr bg-red-600 hover:bg-red-500"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); deleteClips([clip.id]); }}
-          title="Delete clip"
-        >
-          <X className="h-3 w-3" />
-        </button>
-      )}
-
-      {/* trim-right handle */}
-      <div
-        className="absolute right-0 top-0 z-10 h-full w-3 cursor-ew-resize hover:bg-accent/40"
-        onPointerDown={(e) => { e.stopPropagation(); onDown(e, 'trim-right'); }}
+      {/* Delete on hover */}
+      <button
+        className="absolute right-0 top-0 z-20 flex h-5 w-5 items-center justify-center rounded-bl bg-red-600 opacity-0 group-hover:opacity-100 hover:bg-red-500 transition-all duration-150"
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); deleteClips([clip.id]); }}
+        title="Delete (Del)"
       >
-        <div className="absolute right-1 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded bg-white/40" />
+        <X className="h-2.5 w-2.5" />
+      </button>
+
+      {/* Trim-right */}
+      <div
+        className="absolute right-0 top-0 z-10 h-full w-4 cursor-ew-resize hover:bg-white/10 flex items-center justify-center"
+        onPointerDown={(event) => { event.stopPropagation(); startDrag(event, 'trim-right'); }}
+        onMouseDown={(event) => { event.stopPropagation(); startDrag(event, 'trim-right'); }}
+      >
+        <div className="h-5 w-0.5 rounded bg-white/30" />
       </div>
     </div>
   );

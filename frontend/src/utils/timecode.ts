@@ -12,5 +12,5 @@ export function msToPixels(ms: number, zoomLevel: number): number {
 }
 
 export function pixelsToMs(px: number, zoomLevel: number): number {
-  return Math.max(0, Math.round((px / zoomLevel) * 1000));
+  return Math.round((px / zoomLevel) * 1000);
 }

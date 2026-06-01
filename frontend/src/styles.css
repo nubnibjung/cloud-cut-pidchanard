@@ -20,3 +20,45 @@ input,
 select {
   font: inherit;
 }
+
+/* hide scrollbars globally but keep scrollability */
+* {
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+/* Timeline scroll area — show a thin dark scrollbar */
+.timeline-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #3a4050 transparent;
+}
+.timeline-scroll::-webkit-scrollbar {
+  display: block;
+  height: 8px;
+  width: 8px;
+}
+.timeline-scroll::-webkit-scrollbar-track {
+  background: #14171d;
+}
+.timeline-scroll::-webkit-scrollbar-thumb {
+  background: #3a4050;
+  border-radius: 4px;
+}
+.timeline-scroll::-webkit-scrollbar-thumb:hover {
+  background: #5a6070;
+}
+.timeline-scroll::-webkit-scrollbar-corner {
+  background: #14171d;
+}
+
+/* Asset-to-track drag highlight (set via setAttribute in AssetBrowser) */
+[data-asset-drag-over="ok"] {
+  background-color: rgba(52, 211, 153, 0.12);
+  outline: 1px solid rgba(52, 211, 153, 0.5);
+}
+[data-asset-drag-over="no"] {
+  background-color: rgba(239, 68, 68, 0.1);
+  outline: 1px dashed rgba(239, 68, 68, 0.4);
+}

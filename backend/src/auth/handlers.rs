@@ -37,15 +37,39 @@ impl From<User> for PublicUser {
 pub async fn register(State(state): State<AppState>, Json(input): Json<AuthRequest>) -> AppResult<Json<AuthResponse>> {
     input.validate().map_err(|err| AppError::Validation(err.to_string()))?;
     let password_hash = hash_password(&input.password)?;
+
+    let mut tx = state.pool.begin().await?;
+
+    let display_name = input.name.as_deref().unwrap_or(&input.email).to_string();
     let user = sqlx::query_as::<_, User>(
         "INSERT INTO users (email, password_hash, name) VALUES (lower($1), $2, $3)
          RETURNING id, email, password_hash, name, avatar_url",
     )
     .bind(&input.email)
     .bind(password_hash)
-    .bind(input.name.unwrap_or_else(|| input.email.clone()))
-    .fetch_one(&state.pool)
+    .bind(&display_name)
+    .fetch_one(&mut *tx)
     .await?;
+
+    // Auto-create a personal workspace so the user can start immediately
+    let ws_name = format!("{}'s Workspace", user.name);
+    let ws_slug = format!("ws-{}", user.id);
+    sqlx::query(
+        "WITH new_ws AS (
+             INSERT INTO workspaces (name, slug, plan, owner_id) VALUES ($1, $2, 'free', $3)
+             RETURNING id
+         )
+         INSERT INTO workspace_members (workspace_id, user_id, role)
+         SELECT id, $3, 'owner' FROM new_ws",
+    )
+    .bind(&ws_name)
+    .bind(&ws_slug)
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
     let access_token = create_token(user.id, &state.config.jwt_secret)?;
     Ok(Json(AuthResponse { access_token, user: user.into() }))
 }

@@ -10,7 +10,8 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
     let pool = connect(&config.database_url).await?;
-    let app = build_router(config.clone(), pool);
+    let app = build_router(config.clone(), pool.clone());
+    tokio::spawn(backend::worker::run(pool, config.clone()));
     let listener = tokio::net::TcpListener::bind(&config.api_addr).await?;
     tracing::info!(addr = %config.api_addr, "backend listening");
     axum::serve(listener, app).await?;

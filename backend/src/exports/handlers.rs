@@ -38,6 +38,7 @@ pub struct CreateExport {
     resolution: String,
     quality: String,
     idempotency_key: String,
+    timeline_clips: Option<Vec<serde_json::Value>>,
 }
 
 pub async fn create_export(
@@ -57,6 +58,9 @@ pub async fn create_export(
     }
     if !matches!(input.quality.as_str(), "draft" | "standard" | "high") {
         return Err(AppError::Validation("quality must be draft, standard, or high".to_string()));
+    }
+    if input.timeline_clips.as_ref().is_none_or(Vec::is_empty) {
+        return Err(AppError::Validation("timeline snapshot is required for export".to_string()));
     }
 
     let mut tx = state.pool.begin().await?;
@@ -87,6 +91,7 @@ pub async fn create_export(
         "kind": "RenderExport",
         "export_id": export.id,
         "project_id": project_id,
+        "timeline_clips": input.timeline_clips,
         "idempotency_key": input.idempotency_key
     }))
     .bind(format!("export:{}:render", export.id))

@@ -12,7 +12,7 @@ export function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = async (e: { preventDefault(): void }) => {
     e.preventDefault();
     setError('');
     setLoading(true);
@@ -107,9 +107,6 @@ export function LoginPage() {
           </button>
         </form>
 
-        <p className="mt-6 text-center text-xs text-slate-500">
-          Demo: alice@cloudcut.test / password123
-        </p>
       </div>
     </div>
   );

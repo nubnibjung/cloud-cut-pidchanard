@@ -22,6 +22,21 @@ function guessType(file: File): 'video' | 'audio' | 'image' {
   return 'image';
 }
 
+function probeDurationMs(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const type = guessType(file);
+    if (type === 'image') { resolve(null); return; }
+    const el = type === 'audio'
+      ? document.createElement('audio')
+      : document.createElement('video');
+    el.preload = 'metadata';
+    const url = URL.createObjectURL(file);
+    el.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(isFinite(el.duration) && el.duration > 0 ? Math.round(el.duration * 1000) : null); };
+    el.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    el.src = url;
+  });
+}
+
 export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<string | null>(null);
@@ -36,7 +51,10 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
     setProgress('Uploading…');
 
     try {
-      // 1. Upload file to backend
+      // 1. Probe duration from browser (no server needed)
+      const durationMs = await probeDurationMs(file);
+
+      // 2. Upload file to backend
       const form = new FormData();
       form.append('file', file);
       const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
@@ -50,7 +68,7 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
 
       setProgress('Creating asset…');
 
-      // 2. Confirm upload — creates Asset row + enqueues processing jobs
+      // 3. Confirm upload — send browser-detected duration so backend marks asset ready immediately
       const assetKey = crypto.randomUUID();
       const created = await api<{ asset_id: string; status: string }>('/assets/confirm-upload', {
         method: 'POST',
@@ -59,6 +77,7 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
           asset_type: guessType(file),
           original_url: url,
           idempotency_key: assetKey,
+          ...(durationMs ? { duration_ms: durationMs } : {}),
         }),
       });
 
@@ -67,8 +86,8 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
         project_id: projectId,
         type: guessType(file),
         original_url: url,
-        status: 'processing',
-        metadata: {},
+        status: durationMs ? 'ready' : 'processing',
+        metadata: durationMs ? { duration_ms: durationMs } : {},
       };
 
       onUploaded(newAsset);
