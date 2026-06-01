@@ -53,6 +53,25 @@ async fn reset_stuck_jobs(pool: &PgPool) {
             info!("Marked {} stuck export job(s) as failed", r.rows_affected()),
         _ => {}
     }
+
+    // Discard queued render_export jobs whose paired export_job is already failed/cancelled.
+    // This prevents a stale bad-payload job from being picked up before the user's fresh retry.
+    match sqlx::query(
+        "UPDATE processing_jobs pj
+         SET status = 'dead_letter', updated_at = now()
+         FROM export_jobs ej
+         WHERE pj.kind = 'render_export'
+           AND pj.status = 'queued'
+           AND (pj.payload->>'export_id')::uuid = ej.id
+           AND ej.status IN ('failed', 'cancelled')",
+    )
+    .execute(pool)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 =>
+            info!("Discarded {} orphaned render_export job(s)", r.rows_affected()),
+        _ => {}
+    }
 }
 
 /// Extract the local file path from a public URL.

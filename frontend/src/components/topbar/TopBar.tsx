@@ -93,9 +93,9 @@ export function TopBar({ onBack }: Props) {
           timeline_clips: clips.map((clip) => ({
             track_id: clip.track_id,
             asset_id: clip.asset_id,
-            track_position_ms: clip.track_position_ms,
-            in_point_ms: clip.in_point_ms,
-            out_point_ms: clip.out_point_ms,
+            track_position_ms: Math.round(clip.track_position_ms),
+            in_point_ms: Math.round(clip.in_point_ms),
+            out_point_ms: Math.round(clip.out_point_ms),
           })),
         }),
       });
