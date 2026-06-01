@@ -10,6 +10,9 @@ Collaborative browser video editor prototype built with Rust, PostgreSQL, Redis,
 - Infra: Docker Compose for PostgreSQL and Redis
 
 ## Setup
+Prerequisites
+- [Rust](https://rust-lang.org/learn/get-started/)
+- [Docker](https://docs.docker.com/desktop/setup/install/windows-install/)
 
 ```bash
 docker compose up -d postgres redis
