@@ -19,7 +19,8 @@ cargo sqlx migrate run --source backend/migrations
 cargo run -p backend
 cargo run -p worker
 cd frontend
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 ## Environment
