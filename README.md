@@ -13,7 +13,6 @@ Collaborative browser video editor prototype built with Rust, PostgreSQL, Redis,
 
 ```bash
 docker compose up -d postgres redis
-cp .env.example .env
 cargo install sqlx-cli --no-default-features --features postgres
 cargo sqlx migrate run --source backend/migrations
 cargo run -p backend
