@@ -6,12 +6,79 @@ services:
       POSTGRES_PASSWORD: cloudcut
       POSTGRES_DB: cloudcut
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloudcut -d cloudcut"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      API_ADDR: 0.0.0.0:8080
+      DATABASE_URL: postgres://cloudcut:cloudcut@postgres:5432/cloudcut
+      FFMPEG_PATH: ffmpeg
+      FFPROBE_PATH: ffprobe
+      JWT_SECRET: dev-secret-change-me
+      RUST_LOG: backend=info,tower_http=info
+      STORAGE_PUBLIC_BASE_URL: http://localhost:8080/uploads
     ports:
-      - "6379:6379"
+      - "8080:8080"
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker"]
+    environment:
+      DATABASE_URL: postgres://cloudcut:cloudcut@postgres:5432/cloudcut
+      PUBLIC_BASE_URL: http://localhost:8080
+      RUST_LOG: worker=info
+      WORKER_OUTPUT_DIR: /app/uploads/exports
+      WORKER_POLL_MS: 1000
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: http://localhost:8080
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  uploads_data:
