@@ -2,6 +2,19 @@ import { useAuthStore } from '../state/authStore';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
 
+function readErrorMessage(text: string): string {
+  if (!text.trim()) {
+    return 'Request failed';
+  }
+
+  try {
+    const body = JSON.parse(text) as { message?: unknown };
+    return typeof body.message === 'string' ? body.message : text;
+  } catch {
+    return text;
+  }
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = useAuthStore.getState().token;
   const headers: Record<string, string> = {
@@ -20,7 +33,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text);
+    throw new Error(readErrorMessage(text));
   }
   return response.json() as Promise<T>;
 }
