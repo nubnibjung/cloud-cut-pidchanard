@@ -36,16 +36,17 @@ interface LayerProps {
   volume: number;
   isMuted: boolean;
   trackMuted: boolean;
+  canvasScale: number;
 }
 
-function ClipLayer({ clip, asset, cssFilter, isPlaying, currentTimeMs, volume, isMuted, trackMuted }: LayerProps) {
+function ClipLayer({ clip, asset, cssFilter, isPlaying, currentTimeMs, volume, isMuted, trackMuted, canvasScale }: LayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const url = resolveUrl(asset.original_url);
   const updateClip = useProjectStore((s) => s.updateClip);
 
   const { x, y, scale, rotation, opacity } = clip.transform;
   const transform = [
-    `translate(${x}px, ${y}px)`,
+    `translate(${x * canvasScale}px, ${y * canvasScale}px)`,
     `scale(${scale})`,
     `rotate(${rotation}deg)`,
   ].join(' ');
@@ -119,6 +120,22 @@ export function VideoPlayer() {
   const { selectedClipIds, hiddenTrackIds } = useUIStore();
   const { clips, effects, tracks, project, updateClip } = useProjectStore();
   const [assetCache, setAssetCache] = useState<Record<string, Asset>>({});
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [canvasScale, setCanvasScale] = useState(1);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const updateCanvasScale = () => {
+      const { width, height } = canvas.getBoundingClientRect();
+      setCanvasScale(Math.min(width / 1920, height / 1080));
+    };
+    const observer = new ResizeObserver(updateCanvasScale);
+    observer.observe(canvas);
+    updateCanvasScale();
+    return () => observer.disconnect();
+  }, []);
 
   // On project load: probe real duration for all clips that have default 5s duration
   useEffect(() => {
@@ -206,7 +223,7 @@ export function VideoPlayer() {
 
   return (
     <section className="flex h-full flex-col bg-[#101217]">
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-black">
+      <div ref={canvasRef} className="relative min-h-0 flex-1 overflow-hidden bg-black">
         {activeLayers.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-600 select-none">
             No clip at playhead
@@ -232,6 +249,7 @@ export function VideoPlayer() {
               volume={volume}
               isMuted={isMuted}
               trackMuted={track?.is_muted ?? false}
+              canvasScale={canvasScale}
             />
           );
         })}

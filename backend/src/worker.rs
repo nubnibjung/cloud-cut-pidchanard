@@ -243,6 +243,7 @@ struct ClipEntry {
     out_point_ms: i32,
     original_url: String,
     asset_type: String,
+    transform: ClipTransform,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
@@ -252,6 +253,28 @@ struct LayerSortKey {
     order_index: i32,
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(default)]
+struct ClipTransform {
+    x: f64,
+    y: f64,
+    scale: f64,
+    rotation: f64,
+    opacity: f64,
+}
+
+impl Default for ClipTransform {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+            rotation: 0.0,
+            opacity: 1.0,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ExportClipSnapshot {
     track_id: Uuid,
@@ -259,6 +282,8 @@ struct ExportClipSnapshot {
     track_position_ms: i32,
     in_point_ms: i32,
     out_point_ms: i32,
+    #[serde(default)]
+    transform: ClipTransform,
 }
 
 struct ReadyClip<'a> {
@@ -302,6 +327,7 @@ async fn load_export_clips(
                     out_point_ms: clip.out_point_ms,
                     original_url: row.try_get("original_url")?,
                     asset_type: row.try_get("asset_type")?,
+                    transform: clip.transform,
                 },
             ));
         }
@@ -410,13 +436,21 @@ async fn render_timeline(
         filters.push(format!(
             "color=c=black@0.0:s=1920x1080:r=30:d={dur_sec:.3},format=rgba[blank{idx}]"
         ));
+        let transform = clip.transform;
+        let scale = transform.scale.max(0.01);
+        let opacity = transform.opacity.clamp(0.0, 1.0);
         filters.push(format!(
             "[{idx}:v]scale=1920:1080:force_original_aspect_ratio=decrease,\
-             format=rgba[scaled{idx}]"
+             scale=trunc(iw*{scale:.6}/2)*2:trunc(ih*{scale:.6}/2)*2,\
+             rotate={rotation:.6}*PI/180:c=none:ow=iw:oh=ih,format=rgba,\
+             colorchannelmixer=aa={opacity:.6}[scaled{idx}]",
+            rotation = transform.rotation,
         ));
         filters.push(format!(
-            "[blank{idx}][scaled{idx}]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2:shortest=1,\
-             setpts=PTS-STARTPTS+{pos_sec:.3}/TB[cv{idx}]"
+            "[blank{idx}][scaled{idx}]overlay=(main_w-overlay_w)/2+{x:.6}:(main_h-overlay_h)/2+{y:.6}:shortest=1,\
+             setpts=PTS-STARTPTS+{pos_sec:.3}/TB[cv{idx}]",
+            x = transform.x,
+            y = transform.y,
         ));
         let next = format!("[comp{idx}]");
         filters.push(format!("{video_map}[cv{idx}]overlay=0:0:eof_action=pass:shortest=0:enable='between(t,{pos_sec:.3},{end_sec:.3})'{next}"));

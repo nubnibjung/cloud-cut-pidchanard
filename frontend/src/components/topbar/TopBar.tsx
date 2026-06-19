@@ -37,6 +37,11 @@ export function TopBar({ onBack }: Props) {
       clip.track_position_ms,
       clip.in_point_ms,
       clip.out_point_ms,
+      clip.transform.x,
+      clip.transform.y,
+      clip.transform.scale,
+      clip.transform.rotation,
+      clip.transform.opacity,
     ].join(':'))
     .join('|');
 
@@ -96,6 +101,7 @@ export function TopBar({ onBack }: Props) {
             track_position_ms: Math.round(clip.track_position_ms),
             in_point_ms: Math.round(clip.in_point_ms),
             out_point_ms: Math.round(clip.out_point_ms),
+            transform: clip.transform,
           })),
         }),
       });

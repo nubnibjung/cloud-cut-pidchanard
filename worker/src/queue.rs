@@ -29,7 +29,8 @@ impl JobQueue {
         let job = sqlx::query_as::<_, Job>(
             "SELECT id, kind, payload, attempts, max_attempts
              FROM processing_jobs
-             WHERE status IN ('queued', 'failed') AND next_run_at <= now()
+             WHERE kind <> 'render_export'
+               AND status IN ('queued', 'failed') AND next_run_at <= now()
              ORDER BY created_at
              FOR UPDATE SKIP LOCKED
              LIMIT 1",
