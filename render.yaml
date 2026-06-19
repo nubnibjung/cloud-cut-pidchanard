@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: cloudcut-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: API_ADDR
+        value: 0.0.0.0:10000
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: STORAGE_PUBLIC_BASE_URL
+        value: https://cloudcut-backend.onrender.com/uploads
+      - key: RUST_LOG
+        value: backend=info,tower_http=info
+
+  - type: web
+    name: cloudcut-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE
+        value: https://cloudcut-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

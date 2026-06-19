@@ -29,6 +29,17 @@ pnpm dev
 
 See [.env.example](.env.example).
 
+## Render Demo
+
+Create a Render Blueprint from this repository using [`render.yaml`](render.yaml).
+When prompted, set `DATABASE_URL` to a PostgreSQL connection string, such as the
+Supabase session-pooler URL. The Blueprint deploys the Docker backend as
+`cloudcut-backend` and the frontend as a static site.
+
+The free backend has an ephemeral filesystem. Uploaded media and rendered files
+are removed whenever Render replaces the instance, which is suitable for demos
+but not production storage.
+
 ## Architecture
 
 ```text
