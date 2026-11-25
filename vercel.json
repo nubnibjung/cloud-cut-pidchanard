@@ -1,0 +1,35 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "app": {
+      "root": ".",
+      "runtime": "container"
+    },
+    "backend": {
+      "root": "backend",
+      "runtime": "rust"
+    },
+    "frontend": {
+      "root": "frontend",
+      "framework": "vite"
+    },
+    "worker": {
+      "root": "worker",
+      "runtime": "rust"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "app"
+      }
+    }
+  ]
+}
