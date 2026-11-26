@@ -15,6 +15,9 @@ services:
         generateValue: true
       - key: STORAGE_PUBLIC_BASE_URL
         value: https://cloudcut-backend.onrender.com/uploads
+      # Render exports at 720p: 1080p runs the 512 MB free instance out of memory
+      - key: EXPORT_HEIGHT
+        value: "720"
       - key: RUST_LOG
         value: backend=info,tower_http=info
 

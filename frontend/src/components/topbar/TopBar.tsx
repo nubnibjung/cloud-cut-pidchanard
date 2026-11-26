@@ -19,6 +19,11 @@ interface ExportJob {
 
 interface Props { onBack?(): void }
 
+/** How long to keep polling through a dropped connection (a Render restart takes ~1 min). */
+const RECONNECT_FOR_MS = 120_000;
+/** fetch() rejects with a TypeError when the request never got a response. */
+const isNetworkError = (err: unknown) => err instanceof TypeError;
+
 export function TopBar({ onBack }: Props) {
   const project = useProjectStore((s) => s.project);
   const clips = useProjectStore((s) => s.clips);
@@ -123,6 +128,7 @@ export function TopBar({ onBack }: Props) {
 
       // Poll until done, cancelled, or timed out (30 min)
       const deadline = Date.now() + 30 * 60 * 1000;
+      let offlineSince = 0;
 
       for (;;) {
         if (cancelRef.current) break;
@@ -134,7 +140,23 @@ export function TopBar({ onBack }: Props) {
         await new Promise((r) => setTimeout(r, 500));
         if (cancelRef.current) break;
 
-        const current = await api<ExportJob>(`/exports/${job.id}`);
+        let current: ExportJob;
+        try {
+          current = await api<ExportJob>(`/exports/${job.id}`);
+          offlineSince = 0;
+        } catch (err) {
+          // A dropped connection or a server restart shouldn't end the export on the
+          // first failed poll: keep asking for a while, and the server will report the
+          // job as finished or as interrupted once it is reachable again.
+          if (!isNetworkError(err)) throw err;
+          offlineSince ||= Date.now();
+          if (Date.now() - offlineSince > RECONNECT_FOR_MS) {
+            throw new Error("Lost connection to the server during the export. Try again in a minute.");
+          }
+          setProgress('Connection lost — reconnecting…');
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
         setPercent(current.progress_percent);
 
         if (current.status === 'completed' && current.output_url) {
@@ -170,7 +192,11 @@ export function TopBar({ onBack }: Props) {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Export failed');
+      setError(
+        isNetworkError(err)
+          ? "Can't reach the server. Check your connection and try again."
+          : err instanceof Error ? err.message : 'Export failed',
+      );
     } finally {
       setExporting(false);
       exportIdRef.current = null;

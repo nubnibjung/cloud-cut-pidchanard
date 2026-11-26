@@ -414,11 +414,24 @@ async fn render_timeline(
     if total_ms == 0 { anyhow::bail!("Timeline has zero duration"); }
     let total_sec = total_ms as f64 / 1000.0;
 
+    // Output size. Clip transforms are stored in 1920x1080 preview coordinates and are
+    // scaled to the output. EXPORT_HEIGHT (e.g. 720) lowers memory use on small servers.
+    let out_h: i32 = std::env::var("EXPORT_HEIGHT").ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|h: &i32| (240..=2160).contains(h))
+        .unwrap_or(1080) / 2 * 2;
+    let out_w: i32 = (out_h * 16 / 9) / 2 * 2;
+    let k = out_h as f64 / 1080.0;
+
     // Build FFmpeg args
     let mut args: Vec<String> = vec![
+        "-hide_banner".into(), "-loglevel".into(), "error".into(),
+        // One decoding/filtering thread each: slower, but a fraction of the memory
+        "-threads".into(), "1".into(),
+        "-filter_complex_threads".into(), "1".into(),
         "-f".into(), "lavfi".into(),
         "-t".into(), format!("{total_sec:.3}"),
-        "-i".into(), "color=black:s=1920x1080:r=30".into(),
+        "-i".into(), format!("color=black:s={out_w}x{out_h}:r=30"),
     ];
 
     for rc in &ready {
@@ -426,7 +439,7 @@ async fn render_timeline(
         let dur_sec = (clip.out_point_ms - clip.in_point_ms) as f64 / 1000.0;
         let in_sec  = clip.in_point_ms as f64 / 1000.0;
         if clip.asset_type == "image" {
-            args.extend(["-loop".into(),"1".into(),"-t".into(),format!("{dur_sec:.3}"),"-i".into(),rc.path.clone()]);
+            args.extend(["-loop".into(),"1".into(),"-framerate".into(),"30".into(),"-t".into(),format!("{dur_sec:.3}"),"-i".into(),rc.path.clone()]);
         } else {
             args.extend(["-ss".into(),format!("{in_sec:.3}"),"-t".into(),format!("{dur_sec:.3}"),"-i".into(),rc.path.clone()]);
         }
@@ -435,6 +448,9 @@ async fn render_timeline(
     let mut filters: Vec<String> = Vec::new();
     let mut audio_labels: Vec<String> = Vec::new();
 
+    // Each clip is scaled, shifted to its timeline position and overlaid straight onto
+    // the running composite. (No full-frame transparent canvas per clip: that cost a
+    // 1920x1080 RGBA frame per clip per frame and ran small servers out of memory.)
     let mut video_map = "[0:v]".to_string();
     for (i, rc) in ready.iter().enumerate() {
         let clip = rc.entry;
@@ -444,30 +460,38 @@ async fn render_timeline(
         }
 
         let dur_ms  = clip.out_point_ms - clip.in_point_ms;
-        let dur_sec = dur_ms as f64 / 1000.0;
         let pos_sec = clip.track_position_ms as f64 / 1000.0;
         let end_sec = pos_sec + dur_ms as f64 / 1000.0;
-        filters.push(format!(
-            "color=c=black@0.0:s=1920x1080:r=30:d={dur_sec:.3},format=rgba[blank{idx}]"
-        ));
         let transform = clip.transform;
         let scale = transform.scale.max(0.01);
         let opacity = transform.opacity.clamp(0.0, 1.0);
-        filters.push(format!(
-            "[{idx}:v]scale=1920:1080:force_original_aspect_ratio=decrease,\
-             scale=trunc(iw*{scale:.6}/2)*2:trunc(ih*{scale:.6}/2)*2,\
-             rotate={rotation:.6}*PI/180:c=none:ow=iw:oh=ih,format=rgba,\
-             colorchannelmixer=aa={opacity:.6}[scaled{idx}]",
-            rotation = transform.rotation,
-        ));
-        filters.push(format!(
-            "[blank{idx}][scaled{idx}]overlay=(main_w-overlay_w)/2+{x:.6}:(main_h-overlay_h)/2+{y:.6}:shortest=1,\
-             setpts=PTS-STARTPTS+{pos_sec:.3}/TB[cv{idx}]",
-            x = transform.x,
-            y = transform.y,
-        ));
+        let rotated = transform.rotation.abs() > 0.01;
+        let faded = opacity < 0.999;
+
+        let mut chain = format!(
+            "[{idx}:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,             scale=trunc(iw*{scale:.6}/2)*2:trunc(ih*{scale:.6}/2)*2"
+        );
+        // Only pay for an alpha channel when the clip needs one
+        if rotated || faded {
+            chain.push_str(",format=rgba");
+        }
+        if rotated {
+            // Grow the frame to fit the turned clip, as the preview does, instead of clipping its corners
+            let a = format!("{:.6}*PI/180", transform.rotation);
+            chain.push_str(&format!(",rotate={a}:c=none:ow=rotw({a}):oh=roth({a})"));
+        }
+        if faded {
+            chain.push_str(&format!(",colorchannelmixer=aa={opacity:.6}"));
+        }
+        chain.push_str(&format!(",setpts=PTS-STARTPTS+{pos_sec:.3}/TB[s{idx}]"));
+        filters.push(chain);
+
         let next = format!("[comp{idx}]");
-        filters.push(format!("{video_map}[cv{idx}]overlay=0:0:eof_action=pass:shortest=0:enable='between(t,{pos_sec:.3},{end_sec:.3})'{next}"));
+        filters.push(format!(
+            "{video_map}[s{idx}]overlay=x=(W-w)/2+{x:.3}:y=(H-h)/2+{y:.3}:eof_action=pass:enable='between(t,{pos_sec:.3},{end_sec:.3})'{next}",
+            x = transform.x * k,
+            y = transform.y * k,
+        ));
         video_map = next;
     }
 
@@ -498,6 +522,7 @@ async fn render_timeline(
     args.extend([
         "-c:v".into(),"libx264".into(),"-preset".into(),"ultrafast".into(),"-crf".into(),"23".into(),
         "-pix_fmt".into(),"yuv420p".into(),
+        "-threads".into(),"2".into(),
         "-c:a".into(),"aac".into(),
         "-movflags".into(),"+faststart".into(),
         "-t".into(), format!("{total_sec:.3}"),
@@ -590,7 +615,8 @@ async fn run_ffmpeg(
     let stderr_text = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
-        let last = &stderr_text[stderr_text.len().saturating_sub(1500)..];
+        let tail: String = stderr_text.chars().rev().take(1500).collect::<Vec<_>>().into_iter().rev().collect();
+        let last = tail.as_str();
         anyhow::bail!("FFmpeg failed (exit {:?}):\n{}", status.code(), last);
     }
     Ok(())
