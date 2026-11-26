@@ -1,6 +1,6 @@
-import { AlertCircle } from 'lucide-react';
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { Button } from './Button';
+import { LottieIllustration } from './LottieIllustration';
 import { EmptyState } from './Feedback';
 
 interface Props {
@@ -27,7 +27,8 @@ export class ErrorBoundary extends Component<Props, { error: Error | null }> {
     return (
       <div className="flex h-full items-center justify-center bg-canvas">
         <EmptyState
-          icon={<AlertCircle className="h-8 w-8 text-danger" />}
+          large
+          icon={<LottieIllustration name="error" className="-my-10 h-64 w-[26rem] max-w-[90vw]" />}
           title="Something went wrong"
           description="Your saved work is safe. Try again, or go back and reopen the project."
           action={

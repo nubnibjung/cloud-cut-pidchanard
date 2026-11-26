@@ -1,4 +1,5 @@
-import { Layers, Minus, Plus, Split, Trash2 } from 'lucide-react';
+import { Film, Layers, Minus, Music, Plus, Split, Trash2 } from 'lucide-react';
+import { cn } from '../../utils/cn';
 import { MouseEvent, useEffect, useRef, useState } from 'react';
 import type { Track } from '../../types';
 import { api } from '../../services/api';
@@ -22,10 +23,86 @@ const DEFAULT_TRACKS = [
   { type: 'audio', label: 'A2', color: '#ea580c' },
 ] as const;
 
+const VIDEO_COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#db2777', '#4f46e5'];
+const AUDIO_COLORS = ['#059669', '#ea580c', '#ca8a04', '#dc2626', '#16a34a'];
+
 /** Subscribes to the playhead on its own so the rest of the timeline doesn't re-render every frame. */
 function CurrentTimecode() {
   const currentTimeMs = usePlaybackStore((s) => s.currentTimeMs);
   return <div className="text-sm tabular-nums text-fg" aria-label="Playhead position">{formatTimecode(currentTimeMs)}</div>;
+}
+
+/** One "Add track" button under the last track; it asks which kind in a small menu that opens upward. */
+function AddTrackButton({ busy, onAdd }: { busy: boolean; onAdd(type: Track['type']): void }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    rootRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [open]);
+
+  const options = [
+    { type: 'video' as const, label: 'Video track', icon: <Film aria-hidden className="h-4 w-4 text-fg-muted" /> },
+    { type: 'audio' as const, label: 'Audio track', icon: <Music aria-hidden className="h-4 w-4 text-fg-muted" /> },
+  ];
+
+  return (
+    <div
+      ref={rootRef}
+      className="sticky left-0 z-30 w-max px-2 py-2"
+      onKeyDown={(e) => {
+        if (!open) return;
+        const items = Array.from(rootRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+        const i = items.indexOf(document.activeElement as HTMLElement);
+        if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); rootRef.current?.querySelector<HTMLElement>('button')?.focus(); }
+        else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+      }}
+    >
+      <button
+        type="button"
+        disabled={busy}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        className={cn(
+          'flex h-8 items-center gap-1.5 rounded-lg bg-canvas px-2.5 text-xs font-semibold text-fg-muted transition-colors hover:bg-ink/[0.06] hover:text-fg disabled:opacity-50',
+          open && 'bg-ink/[0.06] text-fg',
+        )}
+      >
+        {busy
+          ? <span aria-hidden className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          : <Plus aria-hidden className="h-3.5 w-3.5" />}
+        Add track
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Add track"
+          className="absolute bottom-full left-2 mb-1 min-w-40 animate-pop-in rounded-lg border border-border bg-raised p-1 shadow-menu"
+        >
+          {options.map((o) => (
+            <button
+              key={o.type}
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-semibold text-fg outline-none transition-colors hover:bg-ink/[0.07] focus-visible:bg-ink/[0.07]"
+              onClick={(e) => { e.stopPropagation(); setOpen(false); onAdd(o.type); }}
+            >
+              {o.icon}
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Timeline() {
@@ -148,7 +225,37 @@ export function Timeline() {
     }
   };
 
-  const deselectFromBackground = (e: MouseEvent<HTMLDivElement>) => {
+  const [addingTrack, setAddingTrack] = useState<Track['type'] | null>(null);
+
+  /** Adds one more video or audio track, named after the highest existing number (V3, A3…). */
+  const addTrack = async (type: Track['type']) => {
+    if (!project || addingTrack) return;
+    const prefix = type === 'video' ? 'V' : 'A';
+    const sameType = tracks.filter((t) => t.type === type);
+    const highest = sameType.reduce((max, t) => {
+      const n = Number(/^[VA](\d+)$/.exec(t.label)?.[1]);
+      return Number.isFinite(n) ? Math.max(max, n) : max;
+    }, sameType.length);
+    const palette = type === 'video' ? VIDEO_COLORS : AUDIO_COLORS;
+    setAddingTrack(type);
+    try {
+      const track = await api<Track>(`/projects/${project.id}/tracks`, {
+        method: 'POST',
+        body: JSON.stringify({ type, label: `${prefix}${highest + 1}`, color: palette[sameType.length % palette.length] }),
+      });
+      useProjectStore.setState((state) =>
+        state.project?.id === project.id && !state.tracks.some((t) => t.id === track.id)
+          ? { tracks: [...state.tracks, track] }
+          : state,
+      );
+    } catch (err) {
+      toast.fromError('Could not add the track')(err);
+    } finally {
+      setAddingTrack(null);
+    }
+  };
+
+  const deselectFromBackground =(e: MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) deselectAll();
   };
 
@@ -159,7 +266,8 @@ export function Timeline() {
   const orderedTracks = [...tracks].sort((a, b) => {
     const typeRank = (t: typeof a) => t.type === 'video' ? 0 : 1;
     if (typeRank(a) !== typeRank(b)) return typeRank(a) - typeRank(b);
-    return a.label.localeCompare(b.label, undefined, { numeric: true });
+    // Order by position, not name, so renaming a track doesn't move it
+    return a.order_index - b.order_index;
   });
 
   const majorStep =
@@ -232,6 +340,7 @@ export function Timeline() {
                 clips={clips.filter((c) => c.track_id === track.id)}
               />
             ))}
+            <AddTrackButton busy={addingTrack !== null} onAdd={(type) => void addTrack(type)} />
           </div>
         </div>
       )}

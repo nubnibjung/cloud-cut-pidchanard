@@ -1,4 +1,3 @@
-import { AlertCircle } from 'lucide-react';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { LoginPage } from './components/layout/LoginPage';
 import { ProjectsPage } from './components/layout/ProjectsPage';
@@ -6,6 +5,7 @@ import { loadEditor } from './components/layout/editorChunk';
 import { Button } from './components/ui/Button';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { EmptyState, Spinner } from './components/ui/Feedback';
+import { LottieIllustration } from './components/ui/LottieIllustration';
 import { Toaster } from './components/ui/Toaster';
 import { useAuthStore } from './state/authStore';
 import { useProjectStore } from './state/projectStore';
@@ -83,7 +83,8 @@ export function App() {
     screen = loadError ? (
       <div className="flex h-full items-center justify-center bg-canvas">
         <EmptyState
-          icon={<AlertCircle className="h-8 w-8 text-danger" />}
+          large
+          icon={<LottieIllustration name="error" className="-my-10 h-64 w-[26rem] max-w-[90vw]" />}
           title="Couldn't open this project"
           description={loadError}
           action={

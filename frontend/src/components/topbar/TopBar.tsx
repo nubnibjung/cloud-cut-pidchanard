@@ -7,6 +7,7 @@ import { commandManager } from '../../state/commandManager';
 import { useProjectStore } from '../../state/projectStore';
 import { AnimatedThemeToggler } from '../ui/AnimatedThemeToggler';
 import { Button, IconButton } from '../ui/Button';
+import { LottieIllustration } from '../ui/LottieIllustration';
 
 interface ExportJob {
   id: string;
@@ -23,6 +24,7 @@ export function TopBar({ onBack }: Props) {
   const clips = useProjectStore((s) => s.clips);
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState('');
+  const [percent, setPercent] = useState(0);
   const [error, setError] = useState('');
   const [downloadUrl, setDownloadUrl] = useState('');
   const cancelRef = useRef(false);
@@ -83,6 +85,7 @@ export function TopBar({ onBack }: Props) {
     setExporting(true);
     setError('');
     setDownloadUrl('');
+    setPercent(0);
     setProgress('Queuing render…');
 
     try {
@@ -132,6 +135,7 @@ export function TopBar({ onBack }: Props) {
         if (cancelRef.current) break;
 
         const current = await api<ExportJob>(`/exports/${job.id}`);
+        setPercent(current.progress_percent);
 
         if (current.status === 'completed' && current.output_url) {
           setProgress('Render complete — downloading…');
@@ -198,7 +202,7 @@ export function TopBar({ onBack }: Props) {
             <XCircle aria-hidden className="h-3.5 w-3.5 shrink-0" />
           </button>
         )}
-        {progress && !error && <span className="hidden text-xs tabular-nums text-fg-muted sm:block" role="status">{progress}</span>}
+        {progress && !error && !exporting && <span className="hidden text-xs tabular-nums text-fg-muted sm:block" role="status">{progress}</span>}
         {downloadUrl && !exporting && (
           <Button
             aria-label="Download export"
@@ -231,6 +235,32 @@ export function TopBar({ onBack }: Props) {
           </Button>
         )}
       </div>
+      {exporting && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed inset-x-3 bottom-3 z-40 flex animate-pop-in items-center gap-4 rounded-2xl border border-border bg-raised p-3 pr-4 shadow-menu sm:inset-x-auto sm:bottom-auto sm:right-3 sm:top-14 sm:w-80"
+        >
+          <LottieIllustration name="rendering" className="h-20 w-20 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-fg">Exporting video</p>
+            <p className="mt-0.5 truncate text-xs tabular-nums text-fg-muted">{progress || 'Starting…'}</p>
+            <div
+              className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-ink/10"
+              role="progressbar"
+              aria-label="Export progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent}
+            >
+              <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(3, percent)}%` }} />
+            </div>
+            <button type="button" onClick={cancelExport} className="mt-2 text-xs font-semibold text-fg-muted hover:text-danger">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

@@ -1,11 +1,31 @@
-import { Film, Search } from 'lucide-react';
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { AlertCircle, Clapperboard, Film, Search } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { useThemeStore } from '../../state/themeStore';
 import { cn } from '../../utils/cn';
 
-// The player and each animation load only when shown. None of the animations use
-// expressions, so the light build of the engine is enough.
-const LottieLight = lazy(() => import('lottie-react').then((m) => ({ default: m.LottieLight })));
+// The player and each animation load on demand, and are kept once loaded so the next
+// time they show on the very first frame. None of the animations use expressions,
+// so the light build of the engine is enough.
+// (lottie-react would pull in the full ~200 KB-gzip engine; the light SVG build is a fraction.)
+type PlayerProps = { src: object; loop?: boolean; autoplay?: boolean; className?: string };
+type Player = ComponentType<PlayerProps>;
+let player: Player | null = null;
+let playerPromise: Promise<Player> | null = null;
+const loadPlayer = () =>
+  (playerPromise ??= import('lottie-web/build/player/lottie_light')
+    .then(({ default: lottie }) => {
+      const LightPlayer = ({ src, loop = true, autoplay = true, className }: PlayerProps) => {
+        const ref = useRef<HTMLDivElement>(null);
+        useEffect(() => {
+          if (!ref.current) return;
+          const anim = lottie.loadAnimation({ container: ref.current, renderer: 'svg', loop, autoplay, animationData: src });
+          return () => anim.destroy();
+        }, [src, loop, autoplay]);
+        return <div ref={ref} className={className} />;
+      };
+      return (player = LightPlayer);
+    })
+    .catch((err) => { playerPromise = null; throw err; })); // let a later attempt retry
 
 interface Illustration {
   load(): Promise<{ default: unknown }>;
@@ -13,6 +33,8 @@ interface Illustration {
   fallback: ReactNode;
   /** Fill/stroke colour swaps for dark mode, keyed by the file's own hex colours. */
   darkPalette?: Record<string, string>;
+  /** Same, for light mode. */
+  lightPalette?: Record<string, string>;
 }
 
 const ILLUSTRATIONS = {
@@ -42,9 +64,42 @@ const ILLUSTRATIONS = {
     load: () => import('../../assets/lottie/cut-video.json'),
     fallback: <Film aria-hidden className="h-9 w-9 text-fg-subtle" />,
   },
+  /** Unplugged cable with "404" — something failed to load or crashed. */
+  error: {
+    load: () => import('../../assets/lottie/error.json'),
+    fallback: <AlertCircle aria-hidden className="h-9 w-9 text-danger" />,
+    // Drawn in two dark greys: use the theme's text colours so it reads on both.
+    lightPalette: { '#262626': '#0c1f22', '#383838': '#405c60' },
+    darkPalette: { '#262626': '#ecf6f5', '#383838': '#9bb4b4' },
+  },
+  /** Tablet filling with clips, then a play button — an export is rendering. */
+  rendering: {
+    load: () => import('../../assets/lottie/rendering.json'),
+    fallback: <Clapperboard aria-hidden className="h-9 w-9 text-accent" />,
+    // The light-blue clips take the app's teal; the dark tablet reads on both themes.
+    lightPalette: { '#63b8e8': '#0d9494' },
+    darkPalette: { '#63b8e8': '#2bd4c8', '#4c4c4c': '#2a3d40' },
+  },
 } satisfies Record<string, Illustration>;
 
 export type IllustrationName = keyof typeof ILLUSTRATIONS;
+
+const loaded = new Map<IllustrationName, object>();
+const loadData = (name: IllustrationName) =>
+  loaded.has(name)
+    ? Promise.resolve(loaded.get(name)!)
+    : (ILLUSTRATIONS[name] as Illustration).load().then((m) => {
+        loaded.set(name, m.default as object);
+        return m.default as object;
+      });
+
+/**
+ * Fetches the player and an animation ahead of time. Used for the error screens,
+ * which tend to appear exactly when the network is down and a late download would fail.
+ */
+export function preloadIllustration(name: IllustrationName) {
+  return Promise.all([loadPlayer(), loadData(name)]).catch(() => { /* retried when shown */ });
+}
 
 const toHex = (rgb: number[]) =>
   '#' + rgb.slice(0, 3).map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
@@ -82,36 +137,36 @@ function usePrefersReducedMotion() {
 /** Looping Lottie illustration for empty states, coloured for the current theme. */
 export function LottieIllustration({ name, className }: { name: IllustrationName; className?: string }) {
   const illustration: Illustration = ILLUSTRATIONS[name];
-  const [data, setData] = useState<object | null>(null);
+  const [data, setData] = useState<object | null>(() => loaded.get(name) ?? null);
+  const [Lottie, setLottie] = useState<Player | null>(() => player);
   const theme = useThemeStore((state) => state.theme);
   const reducedMotion = usePrefersReducedMotion();
 
   useEffect(() => {
     let cancelled = false;
-    setData(null);
-    illustration.load().then((module) => {
-      if (!cancelled) setData(module.default as object);
-    });
+    setData(loaded.get(name) ?? null);
+    Promise.all([loadPlayer(), loadData(name)])
+      .then(([p, d]) => { if (!cancelled) { setLottie(() => p); setData(d); } })
+      .catch(() => { /* offline: keep the static icon */ });
     return () => { cancelled = true; };
-  }, [illustration]);
+  }, [name]);
 
   const themed = useMemo(() => {
     if (!data) return null;
-    return theme === 'dark' && illustration.darkPalette ? recolor(data, illustration.darkPalette) : data;
+    const palette = theme === 'dark' ? illustration.darkPalette : illustration.lightPalette;
+    return palette ? recolor(data, palette) : data;
   }, [data, theme, illustration]);
 
   return (
     <div aria-hidden className={cn('flex items-center justify-center', className)}>
-      {themed ? (
-        <Suspense fallback={illustration.fallback}>
-          <LottieLight
-            key={`${name}-${theme}`}
-            src={themed}
-            loop={!reducedMotion}
-            autoplay={!reducedMotion}
-            className="h-full w-full"
-          />
-        </Suspense>
+      {themed && Lottie ? (
+        <Lottie
+          key={`${name}-${theme}`}
+          src={themed}
+          loop={!reducedMotion}
+          autoplay={!reducedMotion}
+          className="h-full w-full"
+        />
       ) : (
         illustration.fallback
       )}

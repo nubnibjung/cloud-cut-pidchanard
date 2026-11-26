@@ -18,6 +18,7 @@ interface Props {
 export function TimelineTrack({ track, clips }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [trackDragOver, setTrackDragOver] = useState(false);
+  const [editingLabel, setEditingLabel] = useState(false);
   const dropRef = useRef<HTMLDivElement>(null);
   const project = useProjectStore((s) => s.project);
   const addClip = useProjectStore((s) => s.addClip);
@@ -199,7 +200,7 @@ export function TimelineTrack({ track, clips }: Props) {
       <div
         className="sticky left-0 z-[5] flex items-center justify-between border-r border-border bg-panel pl-1 pr-0.5"
         data-allow-native-drag="true"
-        draggable={true}
+        draggable={!editingLabel}
         onDragStart={onTrackDragStart}
         onDragEnd={() => setTrackDragOver(false)}
         title="Drag to reorder track"
@@ -207,8 +208,40 @@ export function TimelineTrack({ track, clips }: Props) {
         <div className="flex min-w-0 items-center gap-1 overflow-hidden">
           <GripVertical aria-hidden className="h-3.5 w-3 shrink-0 cursor-grab text-fg-subtle active:cursor-grabbing" />
           <div aria-hidden className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: track.color }} />
-          <span className="whitespace-nowrap text-xs font-medium">{track.label}</span>
+          <button
+            type="button"
+            draggable={false}
+            className="min-w-0 truncate rounded px-0.5 text-left text-xs font-semibold hover:bg-ink/10"
+            title={`${track.label} — double-click to rename`}
+            aria-label={`Rename track ${track.label}`}
+            onDoubleClick={() => setEditingLabel(true)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); setEditingLabel(true); } }}
+          >
+            {track.label}
+          </button>
         </div>
+        {editingLabel && (
+          <input
+            autoFocus
+            defaultValue={track.label}
+            maxLength={24}
+            aria-label={`New name for track ${track.label}`}
+            draggable={false}
+            onFocus={(e) => e.currentTarget.select()}
+            onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur();
+              else if (e.key === 'Escape') { e.currentTarget.value = track.label; e.currentTarget.blur(); }
+              e.stopPropagation(); // keep timeline shortcuts (Space, S, Delete) out of the field
+            }}
+            onBlur={(e) => {
+              const label = e.currentTarget.value.trim();
+              if (label && label !== track.label) updateTrack(track.id, { label });
+              setEditingLabel(false);
+            }}
+            className="absolute inset-x-1 inset-y-3 z-10 rounded-md border border-accent bg-surface px-2 text-xs font-semibold text-fg outline-none"
+          />
+        )}
         <div className="flex shrink-0 items-center text-fg-muted">
           <button
             type="button"
