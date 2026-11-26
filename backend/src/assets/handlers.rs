@@ -37,6 +37,10 @@ pub struct PresignedUrlResponse {
     upload_url: String,
     asset_key: String,
     expires_in: u64,
+    /// true: PUT the file to `upload_url` (R2), then confirm with `public_url`.
+    /// false: no object storage configured; POST the file to /upload instead.
+    direct: bool,
+    public_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,8 +75,27 @@ pub async fn presigned_url(
     let role = workspace_role_for_project(&state.pool, input.project_id, auth.id).await?;
     require_editor(&role)?;
 
-    let asset_key = format!("uploads/{}/{}", input.project_id, Uuid::new_v4());
-    let upload_url = format!("{}/{}", state.config.storage_public_base_url, asset_key);
+    // Keep the extension so the stored object is recognisable and served with a sensible type
+    let ext = std::path::Path::new(&input.filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| e.len() <= 8 && e.chars().all(|c| c.is_ascii_alphanumeric()))
+        .map(|e| format!(".{}", e.to_ascii_lowercase()))
+        .unwrap_or_default();
+    let asset_key = format!("uploads/{}/{}{ext}", input.project_id, Uuid::new_v4());
+
+    let Some(r2) = &state.config.r2 else {
+        return Ok(Json(PresignedUrlResponse {
+            upload_url: String::new(),
+            asset_key,
+            expires_in: 0,
+            direct: false,
+            public_url: None,
+        }));
+    };
+    let expires = std::time::Duration::from_secs(3600);
+    let upload_url = r2.presign("PUT", &asset_key, expires);
+    let public_url = r2.public_url(&asset_key);
 
     tracing::info!(
         project_id = %input.project_id,
@@ -84,7 +107,9 @@ pub async fn presigned_url(
     Ok(Json(PresignedUrlResponse {
         upload_url,
         asset_key,
-        expires_in: 3600,
+        expires_in: expires.as_secs(),
+        direct: true,
+        public_url: Some(public_url),
     }))
 }
 
@@ -98,6 +123,10 @@ pub async fn confirm_upload(
 
     if !matches!(input.asset_type.as_str(), "video" | "audio" | "image") {
         return Err(AppError::Validation("asset_type must be video, audio, or image".to_string()));
+    }
+    // The worker opens this URL with ffmpeg, so only accept files in our own storage
+    if !crate::storage::is_own_media_url(&state.config, &input.original_url) {
+        return Err(AppError::Validation("original_url must point to an uploaded file".to_string()));
     }
 
     let mut tx = state.pool.begin().await?;

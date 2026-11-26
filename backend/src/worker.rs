@@ -86,12 +86,19 @@ async fn reset_stuck_jobs(pool: &PgPool) {
     }
 }
 
-/// Extract the local file path from a public URL.
-/// URL: http://host/uploads/UUID.ext  →  uploads/UUID.ext
-fn url_to_path(url: &str) -> Option<PathBuf> {
-    let key = url.split("/uploads/").nth(1)?;
-    if key.is_empty() { return None; }
-    Some(PathBuf::from("uploads").join(key))
+/// Where ffmpeg should read an asset from: a local file, or a short-lived signed R2
+/// link. None when the file is missing or the URL isn't in this app's own storage.
+async fn media_input(config: &Config, url: &str) -> Option<String> {
+    if let Some(path) = crate::storage::local_upload_path(config, url) {
+        return path.exists().then(|| path.display().to_string());
+    }
+    let r2 = config.r2.as_ref()?;
+    let key = r2.key_from_public_url(url)?;
+    if !r2.exists(&key).await {
+        return None;
+    }
+    // Long enough for a 30-minute render plus seeking
+    Some(r2.presign("GET", &key, Duration::from_secs(2 * 60 * 60)))
 }
 
 fn ffprobe_path() -> String {
@@ -125,7 +132,7 @@ async fn process_next_job(pool: &PgPool, config: &Config) -> anyhow::Result<bool
     let payload: serde_json::Value = row.try_get("payload")?;
 
     let result = match kind.as_str() {
-        "extract_metadata" => job_extract_metadata(pool, &payload).await,
+        "extract_metadata" => job_extract_metadata(pool, config, &payload).await,
         "render_export"    => job_render_export(pool, config, &payload).await,
         other => { warn!("Unknown job kind: {other}"); Ok(()) }
     };
@@ -157,14 +164,14 @@ async fn process_next_job(pool: &PgPool, config: &Config) -> anyhow::Result<bool
 
 // ── extract_metadata ──────────────────────────────────────────────────────────
 
-async fn job_extract_metadata(pool: &PgPool, payload: &serde_json::Value) -> anyhow::Result<()> {
+async fn job_extract_metadata(pool: &PgPool, config: &Config, payload: &serde_json::Value) -> anyhow::Result<()> {
     let asset_id: Uuid = payload["asset_id"]
         .as_str()
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| anyhow::anyhow!("missing asset_id"))?;
 
     let input_url = payload["input_url"].as_str().unwrap_or_default();
-    let duration_ms = probe_duration_ms(input_url).await.unwrap_or(0);
+    let duration_ms = probe_duration_ms(config, input_url).await.unwrap_or(0);
 
     let metadata = if duration_ms > 0 {
         serde_json::json!({ "duration_ms": duration_ms })
@@ -185,10 +192,10 @@ async fn job_extract_metadata(pool: &PgPool, payload: &serde_json::Value) -> any
     Ok(())
 }
 
-async fn probe_duration_ms(url: &str) -> Option<i64> {
-    let path = url_to_path(url)?;
+async fn probe_duration_ms(config: &Config, url: &str) -> Option<i64> {
+    let input = media_input(config, url).await?;
     let out = tokio::process::Command::new(ffprobe_path())
-        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path.to_str()?])
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", &input])
         .output().await.ok()?;
     if out.status.success() {
         let s = String::from_utf8_lossy(&out.stdout);
@@ -389,21 +396,21 @@ async fn render_timeline(
     // Pre-validate: resolve file paths and skip missing files
     let mut ready: Vec<ReadyClip> = Vec::new();
     for clip in &clips {
-        match url_to_path(&clip.original_url) {
-            Some(p) if p.exists() => {
-                let path = p.display().to_string();
+        match media_input(config, &clip.original_url).await {
+            Some(path) => {
                 ready.push(ReadyClip {
                     entry: clip,
                     has_audio: clip.asset_type == "audio" || media_has_audio(config, &path).await,
                     path,
                 });
             }
-            Some(p) => warn!("Skipping clip — file not found: {}", p.display()),
-            None    => warn!("Skipping clip — bad URL: {}", clip.original_url),
+            None => warn!("Skipping clip — file missing or not in our storage: {}", clip.original_url),
         }
     }
     if ready.is_empty() {
-        anyhow::bail!("No accessible media files found for this project. Make sure assets are uploaded.");
+        // Usually the server's disk was wiped (on Render's free plan that happens on every
+        // deploy or restart) while the database still lists the uploads.
+        anyhow::bail!("The media files for this project are no longer on the server. Upload the clips again, then export.");
     }
     info!("{}/{} clips have accessible files", ready.len(), clips.len());
 
@@ -513,7 +520,10 @@ async fn render_timeline(
     } else { None };
 
     let out_key  = format!("export_{export_id}.mp4");
-    let out_path = PathBuf::from("uploads").join(&out_key);
+    // With R2 the file is only staged locally, then uploaded and removed
+    let out_dir = if config.r2.is_some() { "tmp" } else { "uploads" };
+    std::fs::create_dir_all(out_dir).ok();
+    let out_path = PathBuf::from(out_dir).join(&out_key);
 
     args.push("-filter_complex".into());
     args.push(filters.join(";"));
@@ -531,15 +541,29 @@ async fn render_timeline(
         "-y".into(), out_path.display().to_string(),
     ]);
 
-    info!("ffmpeg {}", args.join(" "));
+    // Signed R2 links are credentials: keep them out of logs and error messages
+    let redact = |text: &str| {
+        ready.iter().fold(text.to_string(), |acc, rc| match rc.path.split_once('?') {
+            Some((bare, _)) => acc.replace(&rc.path, bare),
+            None => acc,
+        })
+    };
+    info!("ffmpeg {}", redact(&args.join(" ")));
 
     // 30-minute hard timeout on the entire render
     let render = timeout(Duration::from_secs(30 * 60), run_ffmpeg(pool, export_id, ffmpeg, args, total_ms)).await;
     match render {
-        Ok(r) => r?,
+        Ok(r) => r.map_err(|e| anyhow::anyhow!(redact(&format!("{e:#}"))))?,
         Err(_) => anyhow::bail!("FFmpeg render timed out after 30 minutes"),
     }
 
+    if let Some(r2) = &config.r2 {
+        let key = format!("exports/{out_key}");
+        let uploaded = r2.put_file(&out_path, &key, "video/mp4").await;
+        let _ = std::fs::remove_file(&out_path);
+        uploaded?;
+        return Ok(r2.public_url(&key));
+    }
     let base_url = config.storage_public_base_url.trim_end_matches("/uploads");
     Ok(format!("{base_url}/uploads/{out_key}"))
 }

@@ -41,6 +41,40 @@ function probeDurationMs(file: File): Promise<number | null> {
   });
 }
 
+interface UploadTarget {
+  upload_url: string;
+  direct: boolean;
+  public_url: string | null;
+}
+
+/** PUT to a presigned URL, reporting progress (fetch can't report upload progress). */
+function putWithProgress(url: string, file: File, onProgress: (percent: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url);
+    if (file.type) xhr.setRequestHeader('Content-Type', file.type);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300
+      ? resolve()
+      : reject(new Error(`Upload failed (${xhr.status}). Please try again.`)));
+    // A CORS rule missing on the bucket also lands here
+    xhr.onerror = () => reject(new Error("Upload failed: couldn't reach the file storage."));
+    xhr.send(file);
+  });
+}
+
+async function uploadToServer(file: File): Promise<string> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${API_BASE}/upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${useAuthStore.getState().token ?? ''}` },
+    body: form,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return ((await res.json()) as { url: string }).url;
+}
+
 export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<string | null>(null);
@@ -58,16 +92,15 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
       // 1. Probe duration from browser (no server needed)
       const durationMs = await probeDurationMs(file);
 
-      // 2. Upload file to backend
-      const form = new FormData();
-      form.append('file', file);
-      const uploadRes = await fetch(`${API_BASE}/upload`, {
+      // 2. Upload the file: straight to object storage when the server has it set up
+      //    (large videos never pass through the API server), otherwise to the server's disk
+      const target = await api<UploadTarget>('/assets/presigned-url', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${useAuthStore.getState().token ?? ''}` },
-        body: form,
+        body: JSON.stringify({ project_id: projectId, filename: file.name, content_type: file.type || 'application/octet-stream' }),
       });
-      if (!uploadRes.ok) throw new Error(await uploadRes.text());
-      const { url } = await uploadRes.json() as { url: string };
+      const url = target.direct && target.public_url
+        ? await putWithProgress(target.upload_url, file, (pct) => setProgress(`Uploading… ${pct}%`)).then(() => target.public_url!)
+        : await uploadToServer(file);
 
       setProgress('Creating asset…');
 

@@ -8,6 +8,8 @@ pub struct Config {
     pub storage_public_base_url: String,
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
+    /// Cloudflare R2 for uploads and exports; None stores them on local disk.
+    pub r2: Option<crate::storage::r2::R2>,
 }
 
 impl Config {
@@ -19,6 +21,7 @@ impl Config {
             storage_public_base_url: std::env::var("STORAGE_PUBLIC_BASE_URL").unwrap_or_else(|_| "http://localhost:8080/uploads".to_string()),
             ffmpeg_path: std::env::var("FFMPEG_PATH").unwrap_or_else(|_| discover_ffmpeg_tool("ffmpeg.exe", "ffmpeg")),
             ffprobe_path: std::env::var("FFPROBE_PATH").unwrap_or_else(|_| discover_ffmpeg_tool("ffprobe.exe", "ffprobe")),
+            r2: crate::storage::r2::R2::from_env(),
         }
     }
 }

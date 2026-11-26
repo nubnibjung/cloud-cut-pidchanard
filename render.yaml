@@ -15,6 +15,18 @@ services:
         generateValue: true
       - key: STORAGE_PUBLIC_BASE_URL
         value: https://cloudcut-backend.onrender.com/uploads
+      # Cloudflare R2 for uploads and exports (Render's own disk is wiped on every
+      # deploy/restart). Without all five, files fall back to that disk.
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false
       # Render exports at 720p: 1080p runs the 512 MB free instance out of memory
       - key: EXPORT_HEIGHT
         value: "720"
