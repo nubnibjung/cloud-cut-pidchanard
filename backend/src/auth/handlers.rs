@@ -49,7 +49,14 @@ pub async fn register(State(state): State<AppState>, Json(input): Json<AuthReque
     .bind(password_hash)
     .bind(&display_name)
     .fetch_one(&mut *tx)
-    .await?;
+    .await
+    .map_err(|err| match &err {
+        // users.email is unique: say so instead of a bare "Database error"
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            AppError::Validation("An account with this email already exists. Sign in instead.".to_string())
+        }
+        _ => AppError::Database(err),
+    })?;
 
     // Auto-create a personal workspace so the user can start immediately
     let ws_name = format!("{}'s Workspace", user.name);

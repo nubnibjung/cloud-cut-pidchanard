@@ -78,10 +78,20 @@ impl R2 {
         )
     }
 
-    /// Whether the object exists.
-    pub async fn exists(&self, key: &str) -> bool {
+    /// Whether the object exists: Ok(false) only for a definite 404; any other
+    /// failure (bad keys, network) is an Err describing it.
+    pub async fn exists(&self, key: &str) -> Result<bool, String> {
         let url = self.presign("HEAD", key, Duration::from_secs(60));
-        matches!(reqwest::Client::new().head(url).send().await, Ok(r) if r.status().is_success())
+        match reqwest::Client::new().head(url).send().await {
+            Ok(r) if r.status().is_success() => Ok(true),
+            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => Ok(false),
+            Ok(r) => Err(format!("R2 answered {}", r.status())),
+            Err(e) => Err(format!("R2 unreachable: {e}")),
+        }
+    }
+
+    pub fn bucket(&self) -> &str {
+        &self.bucket
     }
 
     /// Uploads a local file, streaming it rather than reading it into memory.

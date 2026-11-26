@@ -14,7 +14,10 @@ pub async fn run(pool: PgPool, config: Config) {
     // On startup, reset any jobs stuck in processing from a previous crash
     reset_stuck_jobs(&pool).await;
 
-    info!("Job worker started");
+    match &config.r2 {
+        Some(r2) => info!("Job worker started (files in Cloudflare R2 bucket {})", r2.bucket()),
+        None => warn!("Job worker started (files on local disk — set the R2_* variables to keep them across restarts)"),
+    }
     // Poll quickly while there is work, and back off while the queue is empty so an
     // idle server isn't sending the database two queries a second around the clock.
     let mut idle_delay = POLL_MIN;
@@ -88,17 +91,44 @@ async fn reset_stuck_jobs(pool: &PgPool) {
 
 /// Where ffmpeg should read an asset from: a local file, or a short-lived signed R2
 /// link. None when the file is missing or the URL isn't in this app's own storage.
-async fn media_input(config: &Config, url: &str) -> Option<String> {
+async fn media_input(config: &Config, url: &str) -> Result<String, Missing> {
     if let Some(path) = crate::storage::local_upload_path(config, url) {
-        return path.exists().then(|| path.display().to_string());
+        return if path.exists() { Ok(path.display().to_string()) } else { Err(Missing::WipedFromDisk) };
     }
-    let r2 = config.r2.as_ref()?;
-    let key = r2.key_from_public_url(url)?;
-    if !r2.exists(&key).await {
-        return None;
+    let Some(r2) = config.r2.as_ref() else { return Err(Missing::NoStorage) };
+    let Some(key) = r2.key_from_public_url(url) else { return Err(Missing::NoStorage) };
+    match r2.exists(&key).await {
+        Ok(true) => {}
+        Ok(false) => return Err(Missing::NotInBucket),
+        Err(e) => return Err(Missing::StorageError(e)),
     }
     // Long enough for a 30-minute render plus seeking
-    Some(r2.presign("GET", &key, Duration::from_secs(2 * 60 * 60)))
+    Ok(r2.presign("GET", &key, Duration::from_secs(2 * 60 * 60)))
+}
+
+/// Why a clip's file couldn't be opened, so the export error can say what to do.
+#[derive(Debug)]
+enum Missing {
+    /// Stored on the server's disk, which has since been wiped (deploy/restart on Render).
+    WipedFromDisk,
+    /// Stored somewhere this server doesn't use now: on a disk of another host, or in
+    /// R2 while R2 isn't configured.
+    NoStorage,
+    NotInBucket,
+    StorageError(String),
+}
+
+fn missing_media_message(config: &Config, reasons: &[Missing]) -> String {
+    if let Some(Missing::StorageError(e)) = reasons.iter().find(|r| matches!(r, Missing::StorageError(_))) {
+        return format!("Couldn't read the clips from file storage ({e}). Check the R2 keys and bucket on the server.");
+    }
+    if reasons.iter().any(|r| matches!(r, Missing::NotInBucket)) {
+        return "The clips' files aren't in file storage. Upload the clips again, then export.".to_string();
+    }
+    if config.r2.is_none() {
+        return "The clips' files were lost when the server restarted, and file storage (R2) isn't set up on the server yet. Set the R2_* variables, upload the clips again, then export.".to_string();
+    }
+    "These clips were uploaded before file storage was set up and are gone. Upload them again, then export.".to_string()
 }
 
 fn ffprobe_path() -> String {
@@ -193,7 +223,7 @@ async fn job_extract_metadata(pool: &PgPool, config: &Config, payload: &serde_js
 }
 
 async fn probe_duration_ms(config: &Config, url: &str) -> Option<i64> {
-    let input = media_input(config, url).await?;
+    let input = media_input(config, url).await.ok()?;
     let out = tokio::process::Command::new(ffprobe_path())
         .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", &input])
         .output().await.ok()?;
@@ -395,22 +425,24 @@ async fn render_timeline(
 
     // Pre-validate: resolve file paths and skip missing files
     let mut ready: Vec<ReadyClip> = Vec::new();
+    let mut missing: Vec<Missing> = Vec::new();
     for clip in &clips {
         match media_input(config, &clip.original_url).await {
-            Some(path) => {
+            Ok(path) => {
                 ready.push(ReadyClip {
                     entry: clip,
                     has_audio: clip.asset_type == "audio" || media_has_audio(config, &path).await,
                     path,
                 });
             }
-            None => warn!("Skipping clip — file missing or not in our storage: {}", clip.original_url),
+            Err(reason) => {
+                warn!("Skipping clip ({reason:?}): {}", clip.original_url);
+                missing.push(reason);
+            }
         }
     }
     if ready.is_empty() {
-        // Usually the server's disk was wiped (on Render's free plan that happens on every
-        // deploy or restart) while the database still lists the uploads.
-        anyhow::bail!("The media files for this project are no longer on the server. Upload the clips again, then export.");
+        anyhow::bail!(missing_media_message(config, &missing));
     }
     info!("{}/{} clips have accessible files", ready.len(), clips.len());
 
