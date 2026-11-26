@@ -42,7 +42,15 @@ services:
     envVars:
       - key: VITE_API_BASE
         value: https://cloudcut-backend.onrender.com
+      # Absolute address for og:image / canonical (social previews need full URLs)
+      - key: VITE_SITE_URL
+        value: https://cloudcut-frontend.onrender.com
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
+    headers:
+      # Tell crawlers the pages may be indexed (some SEO checkers expect the header too)
+      - path: /*
+        name: X-Robots-Tag
+        value: index, follow

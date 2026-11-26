@@ -7,8 +7,12 @@ import { defineConfig, loadEnv } from 'vite';
  * in index.html with the site's address:
  *   1. VITE_SITE_URL, if set (e.g. https://snipline.app)
  *   2. on Vercel, the project's production domain (set automatically at build)
- *   3. the dev server address while developing
+ *   3. on Render, the service's public URL (set automatically at build)
+ *   4. the dev server address while developing
+ *   5. otherwise the Render address the app is published at
+ * A relative URL here makes Facebook, LINE and LinkedIn show a blank preview image.
  */
+const DEFAULT_SITE_URL = 'https://cloudcut-frontend.onrender.com';
 function siteUrlPlugin(mode) {
   const env = loadEnv(mode, process.cwd(), '');
   return {
@@ -16,8 +20,9 @@ function siteUrlPlugin(mode) {
     transformIndexHtml(html, ctx) {
       const fromEnv = env.VITE_SITE_URL || process.env.VITE_SITE_URL;
       const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+      const render = process.env.RENDER_EXTERNAL_URL;
       const devUrl = ctx.server ? `http://localhost:${ctx.server.config.server.port ?? 5173}` : '';
-      const siteUrl = (fromEnv || (vercel ? `https://${vercel}` : '') || devUrl).replace(/\/+$/, '');
+      const siteUrl = (fromEnv || (vercel ? `https://${vercel}` : '') || render || devUrl || DEFAULT_SITE_URL).replace(/\/+$/, '');
       return html.replaceAll('%SITE_URL%', siteUrl);
     },
   };
