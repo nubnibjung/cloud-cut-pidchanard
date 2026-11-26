@@ -63,7 +63,9 @@ export function LoginPage() {
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(55%_45%_at_50%_0%,rgba(45,212,191,0.14),transparent_70%),radial-gradient(40%_40%_at_85%_100%,rgba(255,255,255,0.05),transparent_70%)]"
       />
 
-      <AnimatedThemeToggler className="absolute right-4 top-4" />
+      <div className="absolute right-4 top-4 z-10 sm:right-6 sm:top-6">
+        <AnimatedThemeToggler className="border border-ink/10 bg-ink/[0.04] backdrop-blur" />
+      </div>
 
       <main className="relative w-full max-w-sm animate-pop-in rounded-3xl border border-ink/10 bg-ink/[0.04] px-7 pb-7 pt-9 shadow-card backdrop-blur-xl">
         <div className="mb-7 flex flex-col items-center gap-4">
