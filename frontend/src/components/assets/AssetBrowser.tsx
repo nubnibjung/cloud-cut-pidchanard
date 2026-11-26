@@ -1,17 +1,18 @@
-import { Film, Music, Image, Loader2, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Film, FolderOpen, Image, Music, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../../services/api';
+import { forgetAsset, loadProjectAssets, rememberAsset } from '../../services/assets';
+import { assetName, resolveUrl } from '../../services/config';
 import { useProjectStore } from '../../state/projectStore';
 import { usePlaybackStore } from '../../state/playbackStore';
+import { toast } from '../../state/toastStore';
 import { useUIStore } from '../../state/uiStore';
 import type { Asset, AssetType } from '../../types';
-import { formatTimecode } from '../../utils/timecode';
+import { cn } from '../../utils/cn';
+import { IconButton } from '../ui/Button';
+import { EmptyState, Spinner } from '../ui/Feedback';
+import { ShimmeringText } from '../ui/ShimmeringText';
 import { AssetUpload } from './AssetUpload';
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
-function resolveAssetUrl(url: string) {
-  return url.startsWith('http') ? url : `${API_BASE}/${url.replace(/^\//, '')}`;
-}
 
 function probeUrlDurationMs(url: string, type: 'video' | 'audio'): Promise<number> {
   return new Promise((resolve) => {
@@ -23,18 +24,49 @@ function probeUrlDurationMs(url: string, type: 'video' | 'audio'): Promise<numbe
   });
 }
 
-const TYPE_ICON: Record<string, React.ReactNode> = {
-  video: <Film className="h-4 w-4 shrink-0 text-blue-400" />,
-  audio: <Music className="h-4 w-4 shrink-0 text-green-400" />,
-  image: <Image className="h-4 w-4 shrink-0 text-purple-400" />,
+const TYPE_STYLE: Record<AssetType, { icon: typeof Film; tile: string; label: string }> = {
+  video: { icon: Film, tile: 'bg-sky-400/10 text-sky-400', label: 'Video' },
+  audio: { icon: Music, tile: 'bg-success/10 text-success', label: 'Audio' },
+  image: { icon: Image, tile: 'bg-violet-400/10 text-violet-400', label: 'Image' },
 };
 
-const STATUS_COLOR: Record<string, string> = {
-  ready: 'bg-green-900/40 text-green-400',
-  processing: 'bg-yellow-900/40 text-yellow-400',
-  uploading: 'bg-blue-900/40 text-blue-400',
-  failed: 'bg-red-900/40 text-red-400',
-};
+/** Compact length for list rows: 0:12, 1:05, 1:02:30. */
+function formatDuration(ms: number): string {
+  const total = Math.round(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = (total % 60).toString().padStart(2, '0');
+  return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${s}` : `${m}:${s}`;
+}
+
+/** Square preview: the picture itself for images, a tinted type icon otherwise. */
+function AssetTile({ asset }: { asset: Asset }) {
+  const [broken, setBroken] = useState(false);
+  const style = TYPE_STYLE[asset.type] ?? TYPE_STYLE.video;
+  const Icon = style.icon;
+  if (asset.type === 'image' && asset.status === 'ready' && !broken) {
+    return (
+      <img
+        src={resolveUrl(asset.original_url)}
+        alt=""
+        width={40}
+        height={40}
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+        className="h-10 w-10 shrink-0 rounded-lg bg-canvas object-cover"
+        onError={() => setBroken(true)}
+      />
+    );
+  }
+  return (
+    <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg', style.tile)}>
+      <Icon aria-hidden className="h-[18px] w-[18px]" />
+    </div>
+  );
+}
+
+const UNDO_WINDOW_MS = 5000;
 
 export function AssetBrowser() {
   const project = useProjectStore((state) => state.project);
@@ -46,6 +78,8 @@ export function AssetBrowser() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [filter, setFilter] = useState<AssetType | 'all'>('all');
   const [loading, setLoading] = useState(false);
+  // Assets removed from the list but not yet deleted on the server (still undoable)
+  const pendingDeletes = useRef(new Map<string, number>());
 
   const autoAddReadyAssets = async (loadedAssets: Asset[]) => {
     const { clips: existingClips, tracks: currentTracks } = useProjectStore.getState();
@@ -68,7 +102,7 @@ export function AssetBrowser() {
       // Probe real duration from browser — don't rely on metadata default 5s
       let durationMs = asset.metadata?.duration_ms ?? 0;
       if (!durationMs && asset.type !== 'image') {
-        durationMs = await probeUrlDurationMs(resolveAssetUrl(asset.original_url), asset.type as 'video' | 'audio');
+        durationMs = await probeUrlDurationMs(resolveUrl(asset.original_url), asset.type as 'video' | 'audio');
       }
       if (!durationMs) durationMs = 5000;
 
@@ -77,7 +111,7 @@ export function AssetBrowser() {
       addClip({
         track_id: targetTrack.id,
         asset_id: asset.id,
-        name: asset.original_url.split('/').pop() ?? 'Clip',
+        name: assetName(asset),
         track_position_ms: startMs,
         in_point_ms: 0,
         out_point_ms: durationMs,
@@ -87,19 +121,21 @@ export function AssetBrowser() {
     }
   };
 
-  const load = () => {
+  const load = (force = false) => {
     if (!project || project.id === 'project-seed') return;
     setLoading(true);
-    api<Asset[]>(`/assets?projectId=${project.id}`)
+    // Shared with the player and thumbnail code, so the list is fetched once per project
+    loadProjectAssets(project.id, force)
       .then((loadedAssets) => {
-        setAssets(loadedAssets);
-        autoAddReadyAssets(loadedAssets);
+        const listed = loadedAssets.filter((a) => !pendingDeletes.current.has(a.id));
+        setAssets(listed);
+        autoAddReadyAssets(listed);
       })
-      .catch(console.error)
+      .catch(toast.fromError('Could not load assets'))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [project?.id]);
+  useEffect(() => { load(true); }, [project?.id]);
 
   const onAssetPointerDown = (e: React.PointerEvent<HTMLDivElement>, asset: Asset) => {
     if (e.button !== 0) return;
@@ -136,11 +172,12 @@ export function AssetBrowser() {
         document.body.style.cursor = 'grabbing';
         document.body.style.userSelect = 'none';
         ghost = document.createElement('div');
-        ghost.textContent = asset.original_url.split('/').pop() ?? 'Clip';
+        ghost.textContent = assetName(asset);
         ghost.style.cssText =
           'position:fixed;z-index:9999;pointer-events:none;padding:4px 10px;' +
-          'border-radius:4px;border:1px solid rgba(52,211,153,.6);' +
-          'background:#1e2330;font-size:12px;color:#fff;white-space:nowrap';
+          'border-radius:6px;border:1px solid rgba(45,212,191,.6);' +
+          'background:rgb(var(--c-raised));font-size:12px;color:rgb(var(--c-fg));white-space:nowrap;' +
+          'box-shadow:0 12px 32px -8px rgba(0,0,0,.6)';
         document.body.appendChild(ghost);
       }
       if (ghost) {
@@ -169,7 +206,7 @@ export function AssetBrowser() {
       addClip({
         track_id: targetTrack.id,
         asset_id: asset.id,
-        name: asset.original_url.split('/').pop() ?? 'Clip',
+        name: assetName(asset),
         track_position_ms: Math.max(0, Math.round(((ev.clientX - rect.left) / zoom) * 1000)),
         in_point_ms: 0,
         out_point_ms: asset.metadata?.duration_ms ?? 5000,
@@ -190,45 +227,82 @@ export function AssetBrowser() {
     addClip({
       track_id: targetTrack.id,
       asset_id: asset.id,
-      name: asset.original_url.split('/').pop() ?? 'Clip',
+      name: assetName(asset),
       track_position_ms: currentTimeMs,
       in_point_ms: 0,
       out_point_ms: durationMs,
     });
   };
 
-  const deleteAsset = async (assetId: string) => {
+  // The server delete waits a few seconds so the toast can offer Undo
+  const deleteAsset = (asset: Asset) => {
     if (!project) return;
-    setAssets((prev) => prev.filter((a) => a.id !== assetId));
-    api(`/assets/${assetId}`, { method: 'DELETE' }).catch((err) => {
-      console.error('Failed to delete asset:', err);
-      load();
-    });
+    setAssets((prev) => prev.filter((a) => a.id !== asset.id));
+    if (pendingAsset?.id === asset.id) setPendingAsset(null);
+
+    const timer = window.setTimeout(() => {
+      pendingDeletes.current.delete(asset.id);
+      forgetAsset(asset.id);
+      api(`/assets/${asset.id}`, { method: 'DELETE' }).catch((err) => {
+        toast.fromError('Could not delete the asset')(err);
+        load(true);
+      });
+    }, UNDO_WINDOW_MS);
+    pendingDeletes.current.set(asset.id, timer);
+
+    toast.info(
+      `Deleted ${assetName(asset)}`,
+      {
+        label: 'Undo',
+        onClick: () => {
+          if (!pendingDeletes.current.delete(asset.id)) return;
+          window.clearTimeout(timer);
+          setAssets((prev) => (prev.some((a) => a.id === asset.id) ? prev : [asset, ...prev]));
+        },
+      },
+      UNDO_WINDOW_MS,
+    );
   };
 
   const visible = assets.filter((a) => filter === 'all' || a.type === filter);
 
   return (
-    <aside className="flex h-full flex-col border-r border-border bg-[#171b23]">
-      <div className="flex h-11 items-center justify-between border-b border-border px-3">
-        <span className="text-sm font-semibold">Assets</span>
-        {loading && <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />}
+    <aside className="flex h-full flex-col overflow-clip bg-panel" aria-label="Assets">
+      <div className="flex h-11 shrink-0 items-center justify-between border-b border-border px-3 max-md:hidden">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          Assets
+          {assets.length > 0 && (
+            <span className="rounded-full bg-ink/[0.08] px-1.5 py-px text-2xs font-medium tabular-nums text-fg-muted">{assets.length}</span>
+          )}
+        </h2>
+        {loading && <Spinner className="h-3.5 w-3.5 text-fg-muted" />}
       </div>
 
-      <div className="flex gap-1 border-b border-border p-2">
-        {(['all', 'video', 'audio', 'image'] as const).map((t) => (
-          <button
-            key={t}
-            className={`rounded px-2 py-1 text-xs capitalize ${filter === t ? 'bg-accent text-black' : 'bg-[#1e2330] text-slate-300 hover:bg-[#252b3b]'}`}
-            onClick={() => setFilter(t)}
-          >{t}</button>
-        ))}
+      {/* Segmented filter */}
+      <div className="shrink-0 px-2 pt-2">
+        <div className="flex rounded-lg bg-canvas p-0.5" role="group" aria-label="Filter assets by type">
+          {(['all', 'video', 'audio', 'image'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              aria-pressed={filter === t}
+              className={cn(
+                'h-7 flex-1 rounded-md text-xs font-semibold capitalize transition-colors',
+                filter === t ? 'bg-raised text-fg shadow-sm' : 'text-fg-muted hover:text-fg',
+              )}
+              onClick={() => setFilter(t)}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
       </div>
 
       <AssetUpload
         projectId={project?.id ?? null}
         typeFilter={filter}
         onUploaded={(a) => {
+          rememberAsset(a);
           setAssets((prev) => [a, ...prev]);
           const trackType = a.type === 'audio' ? 'audio' : 'video';
           const targetTrack = tracks.find((t) => t.type === trackType);
@@ -238,7 +312,7 @@ export function AssetBrowser() {
             addClip({
               track_id: targetTrack.id,
               asset_id: a.id,
-              name: a.original_url.split('/').pop() ?? 'Clip',
+              name: assetName(a),
               track_position_ms: currentTimeMs,
               in_point_ms: 0,
               out_point_ms: durationMs,
@@ -247,55 +321,85 @@ export function AssetBrowser() {
         }}
       />
 
-      <div className="flex flex-col gap-2 overflow-auto p-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-auto p-2 pt-0">
         {pendingAsset && (
-          <div className="rounded border border-accent/50 bg-accent/10 px-2 py-1.5 text-xs text-accent">
-            Click a compatible timeline track to place this asset.
-          </div>
+          <p className="mb-1 rounded-lg bg-accent/10 px-2.5 py-2 text-xs text-accent" role="status">
+            Click a matching track in the timeline to place it.
+          </p>
         )}
         {visible.length === 0 && !loading && (
-          <p className="py-6 text-center text-xs text-slate-500">No assets yet.<br />Upload a file above.</p>
+          <EmptyState
+            compact
+            className="flex-1"
+            icon={<FolderOpen className="h-6 w-6" />}
+            title={assets.length === 0 ? 'No assets yet' : `No ${filter} assets`}
+            description={assets.length === 0 ? 'Upload video, audio or images to start building your timeline.' : undefined}
+          />
         )}
-        {visible.map((asset) => (
-          <div
-            key={asset.id}
-            className={[
-              'group relative cursor-grab rounded border bg-[#1e2330] p-2 hover:border-accent/40 active:cursor-grabbing',
-              pendingAsset?.id === asset.id ? 'border-accent ring-1 ring-accent/50' : 'border-border',
-            ].join(' ')}
-            draggable={false}
-            onDragStart={(e) => e.preventDefault()}
-            onPointerDown={(e) => onAssetPointerDown(e, asset)}
-            onClick={() => setPendingAsset(pendingAsset?.id === asset.id ? null : asset)}
-            onDoubleClick={() => handleDropOnTrack(asset)}
-            title="Drag to a track. Click to select then click a track. Double-click to add at playhead."
-          >
-            <div className="mb-1.5 flex items-center gap-2">
-              {TYPE_ICON[asset.type] ?? TYPE_ICON.video}
-              <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                {asset.original_url.split('/').pop()}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_COLOR[asset.status] ?? 'bg-surface text-slate-400'}`}>
-                {asset.status}
-              </span>
-              {asset.metadata?.duration_ms && (
-                <span className="text-[10px] text-slate-500 tabular-nums">
-                  {formatTimecode(asset.metadata.duration_ms)}
-                </span>
+        {visible.map((asset) => {
+          const name = assetName(asset);
+          const selected = pendingAsset?.id === asset.id;
+          return (
+            <div
+              key={asset.id}
+              role="button"
+              tabIndex={0}
+              aria-pressed={selected}
+              aria-label={`${name}, ${asset.type}. Press Enter to add at the playhead.`}
+              className={cn(
+                'group relative flex cursor-grab items-center gap-2.5 rounded-lg p-1.5 transition-colors active:cursor-grabbing',
+                selected ? 'bg-accent/10 ring-1 ring-inset ring-accent/50' : 'hover:bg-ink/[0.05]',
               )}
-            </div>
-            <button
-              className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded bg-red-600/80 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500"
-              title="Delete asset"
-              onClick={(e) => { e.stopPropagation(); deleteAsset(asset.id); }}
-              onPointerDown={(e) => e.stopPropagation()}
+              draggable={false}
+              onDragStart={(e) => e.preventDefault()}
+              onPointerDown={(e) => onAssetPointerDown(e, asset)}
+              onClick={() => setPendingAsset(selected ? null : asset)}
+              onDoubleClick={() => handleDropOnTrack(asset)}
+              onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return;
+                // Space is the editor-wide play/pause key, so only Enter acts here
+                if (e.key === 'Enter') { e.preventDefault(); handleDropOnTrack(asset); }
+              }}
+              title="Drag to a track, or double-click to add at the playhead"
             >
-              <Trash2 className="h-3 w-3 text-white" />
-            </button>
-          </div>
-        ))}
+              <AssetTile asset={asset} />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium text-fg">{name}</p>
+                <p className="mt-0.5 flex items-center gap-1.5 text-2xs text-fg-subtle">
+                  <span>{(TYPE_STYLE[asset.type] ?? TYPE_STYLE.video).label}</span>
+                  {asset.metadata?.duration_ms ? (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span className="tabular-nums">{formatDuration(asset.metadata.duration_ms)}</span>
+                    </>
+                  ) : null}
+                  {/* "Ready" is the normal case, so only the exceptions are called out */}
+                  {asset.status === 'failed' && <span className="font-medium text-danger">· Failed</span>}
+                  {(asset.status === 'processing' || asset.status === 'uploading') && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <ShimmeringText
+                        className="font-medium"
+                        text={asset.status === 'uploading' ? 'Uploading' : 'Processing'}
+                        color="rgb(var(--c-warning) / 0.75)"
+                        shimmerColor="rgb(var(--c-fg))"
+                      />
+                    </>
+                  )}
+                </p>
+              </div>
+              <IconButton
+                label={`Delete ${name}`}
+                size="sm"
+                className="shrink-0 opacity-0 hover:bg-danger/15 hover:text-danger focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+                onClick={(e) => { e.stopPropagation(); deleteAsset(asset); }}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <Trash2 aria-hidden className="h-3.5 w-3.5" />
+              </IconButton>
+            </div>
+          );
+        })}
       </div>
     </aside>
   );

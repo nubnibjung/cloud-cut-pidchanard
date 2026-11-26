@@ -27,3 +27,9 @@ export const usePlaybackStore = create<PlaybackState>((set) => ({
   setVolume: (volume) => set({ volume: Math.min(1, Math.max(0, volume)) }),
   toggleMute: () => set((state) => ({ isMuted: !state.isMuted }))
 }));
+
+// Dev only: hot-swapping this module would create a second, empty store while
+// components still hold the old one. Reload the page instead.
+if (import.meta.hot) {
+  import.meta.hot.accept(() => window.location.reload());
+}

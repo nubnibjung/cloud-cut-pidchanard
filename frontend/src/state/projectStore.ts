@@ -2,6 +2,25 @@ import { create } from 'zustand';
 import { api } from '../services/api';
 import type { Clip, ClipEffect, Project, TextOverlay, Track, Transition } from '../types';
 import { commandManager } from './commandManager';
+import { toast } from './toastStore';
+
+/** Edits are applied optimistically; tell the user when the server didn't accept one. */
+const saveFailed = toast.fromError("A change couldn't be saved. Check your connection.");
+
+/* Continuous edits (sliders, drags, scrubbing) update the screen on every tick but
+   are saved once the user pauses, and land in undo history as one step. */
+const EDIT_SETTLE_MS = 350;
+
+type Transform = Clip['transform'];
+const pendingTransforms = new Map<string, { from: Transform; timer: number }>();
+const pendingEffectSaves = new Map<string, { timer: number; save(): void }>();
+/** Effects created locally resolve to their server id once the POST returns. */
+const effectServerIds = new Map<string, Promise<string>>();
+
+const sameTransform = (a: Transform, b: Transform) =>
+  a.x === b.x && a.y === b.y && a.scale === b.scale && a.rotation === b.rotation && a.opacity === b.opacity;
+
+export const DEFAULT_TRANSFORM: Transform = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 };
 
 interface NewClip {
   track_id: string;
@@ -38,7 +57,10 @@ interface ProjectState {
   addEffect(clipId: string, effect: Omit<ClipEffect, 'id' | 'clip_id'>): void;
   updateEffect(clipId: string, effectId: string, params: unknown): void;
   deleteEffect(clipId: string, effectId: string): void;
+  /** Live transform edit: shown at once, saved (and added to undo) when edits pause. */
   updateClipTransform(clipId: string, transform: Clip['transform']): void;
+  /** Saves a pending transform edit right away, e.g. when a drag ends. */
+  commitClipTransform(clipId: string): void;
   updateTrack(trackId: string, patch: Partial<Pick<Track, 'is_locked' | 'is_muted' | 'label' | 'color' | 'order_index'>>): void;
   reorderTrack(trackId: string, targetTrackId: string): void;
   applyRemoteOperation(op: { type: string; payload: unknown }): void;
@@ -104,7 +126,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }).then((clip) => {
         currentId = clip.id;
         set((state) => ({ clips: state.clips.map((c) => c.id === optimisticId ? clip : c) }));
-      }).catch(console.error);
+      }).catch(saveFailed);
     };
 
     commandManager.execute({
@@ -115,7 +137,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       execute: doAdd,
       undo: () => {
         set((state) => ({ clips: state.clips.filter((c) => c.id !== currentId && c.id !== optimisticId) }));
-        api(`/projects/${projectId}/clips/${currentId}`, { method: 'DELETE' }).catch(console.error);
+        api(`/projects/${projectId}/clips/${currentId}`, { method: 'DELETE' }).catch(saveFailed);
       },
     });
   },
@@ -149,7 +171,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           .then((updatedClip) => {
             set((state) => ({ clips: state.clips.map((c) => c.id === clipId ? updatedClip : c) }));
           })
-          .catch((err) => console.error('[projectStore] updateClip failed:', err));
+          .catch(saveFailed);
       }
     };
 
@@ -202,7 +224,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
               const without = state.clips.filter((c) => c.id !== clipId && c.id !== left.id && c.id !== right.id);
               return { clips: [...without, left, right].sort((a, b) => a.track_position_ms - b.track_position_ms) };
             });
-          }).catch(console.error);
+          }).catch(saveFailed);
         }
       },
       undo: () => {
@@ -213,11 +235,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         }));
         const projectId = get().project?.id;
         if (projectId) {
-          api(`/projects/${projectId}/clips/${rightId}`, { method: 'DELETE' }).catch(console.error);
+          api(`/projects/${projectId}/clips/${rightId}`, { method: 'DELETE' }).catch(saveFailed);
           api<Clip>(`/projects/${projectId}/clips/${clipId}`, {
             method: 'PATCH',
             body: JSON.stringify({ out_point_ms: original.out_point_ms, duration_ms: original.duration_ms }),
-          }).catch(console.error);
+          }).catch(saveFailed);
         }
       },
     });
@@ -232,7 +254,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set((state) => ({ clips: state.clips.filter((c) => !clipIds.includes(c.id)) }));
       if (projectId) {
         for (const id of clipIds) {
-          api(`/projects/${projectId}/clips/${id}`, { method: 'DELETE' }).catch(console.error);
+          api(`/projects/${projectId}/clips/${id}`, { method: 'DELETE' }).catch(saveFailed);
         }
       }
     };
@@ -260,17 +282,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   addEffect(clipId, effect) {
-    const newEffect: ClipEffect = { ...effect, id: crypto.randomUUID(), clip_id: clipId };
+    const localId = crypto.randomUUID();
+    const newEffect: ClipEffect = { ...effect, id: localId, clip_id: clipId };
     set((state) => ({
       effects: { ...state.effects, [clipId]: [...(state.effects[clipId] ?? []), newEffect] },
     }));
     const projectId = get().project?.id;
-    if (projectId) {
-      api(`/projects/${projectId}/clips/${clipId}/effects`, {
-        method: 'POST',
-        body: JSON.stringify({ type: (effect as { effect_type?: string }).effect_type ?? effect.type, params: effect.params, enabled: effect.enabled }),
-      }).catch(console.error);
-    }
+    if (!projectId) return;
+    const created = api<ClipEffect>(`/projects/${projectId}/clips/${clipId}/effects`, {
+      method: 'POST',
+      body: JSON.stringify({ type: effect.type, params: effect.params, enabled: effect.enabled }),
+    }).then((saved) => {
+      // Swap in the server's id so later edits and deletes reach the right row
+      set((state) => ({
+        effects: {
+          ...state.effects,
+          [clipId]: (state.effects[clipId] ?? []).map((e) => (e.id === localId ? { ...e, id: saved.id } : e)),
+        },
+      }));
+      return saved.id;
+    });
+    effectServerIds.set(localId, created);
+    created.catch(saveFailed);
   },
 
   updateEffect(clipId, effectId, params) {
@@ -283,15 +316,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       },
     }));
     const projectId = get().project?.id;
-    if (projectId) {
-      api(`/projects/${projectId}/clips/${clipId}/effects/${effectId}`, {
+    if (!projectId) return;
+    const save = async () => {
+      pendingEffectSaves.delete(effectId);
+      const serverId = await (effectServerIds.get(effectId) ?? effectId);
+      await api(`/projects/${projectId}/clips/${clipId}/effects/${serverId}`, {
         method: 'PATCH',
         body: JSON.stringify({ params }),
-      }).catch(console.error);
-    }
+      });
+    };
+    const pending = pendingEffectSaves.get(effectId);
+    if (pending) window.clearTimeout(pending.timer);
+    pendingEffectSaves.set(effectId, {
+      save: () => { save().catch(saveFailed); },
+      timer: window.setTimeout(() => { save().catch(saveFailed); }, EDIT_SETTLE_MS),
+    });
   },
 
   deleteEffect(clipId, effectId) {
+    const pending = pendingEffectSaves.get(effectId);
+    if (pending) { window.clearTimeout(pending.timer); pendingEffectSaves.delete(effectId); }
     set((state) => ({
       effects: {
         ...state.effects,
@@ -300,21 +344,58 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }));
     const projectId = get().project?.id;
     if (projectId) {
-      api(`/projects/${projectId}/clips/${clipId}/effects/${effectId}`, { method: 'DELETE' }).catch(console.error);
+      Promise.resolve(effectServerIds.get(effectId) ?? effectId)
+        .then((serverId) => api(`/projects/${projectId}/clips/${clipId}/effects/${serverId}`, { method: 'DELETE' }))
+        .catch(saveFailed);
     }
   },
 
   updateClipTransform(clipId, transform) {
+    const clip = get().clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    const pending = pendingTransforms.get(clipId);
+    if (pending) window.clearTimeout(pending.timer);
+    const from = pending?.from ?? clip.transform;
+
     set((state) => ({
-      clips: state.clips.map((c) => c.id === clipId ? { ...c, transform } : c),
+      clips: state.clips.map((c) => (c.id === clipId ? { ...c, transform } : c)),
     }));
+    pendingTransforms.set(clipId, {
+      from,
+      timer: window.setTimeout(() => get().commitClipTransform(clipId), EDIT_SETTLE_MS),
+    });
+  },
+
+  commitClipTransform(clipId) {
+    const pending = pendingTransforms.get(clipId);
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    pendingTransforms.delete(clipId);
+
+    const clip = get().clips.find((c) => c.id === clipId);
     const projectId = get().project?.id;
-    if (projectId) {
+    if (!clip || !projectId || sameTransform(clip.transform, pending.from)) return;
+
+    const to = clip.transform;
+    const from = pending.from;
+    const apply = (transform: Transform) => {
+      set((state) => ({
+        clips: state.clips.map((c) => (c.id === clipId ? { ...c, transform } : c)),
+      }));
       api(`/projects/${projectId}/clips/${clipId}`, {
         method: 'PATCH',
         body: JSON.stringify({ transform }),
-      }).catch(console.error);
-    }
+      }).catch(saveFailed);
+    };
+    apply(to);
+    commandManager.record({
+      id: crypto.randomUUID(),
+      type: 'transform-clip',
+      description: 'Transform clip',
+      timestamp: Date.now(),
+      execute: () => apply(to),
+      undo: () => apply(from),
+    });
   },
 
   updateTrack(trackId, patch) {
@@ -326,7 +407,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       api(`/projects/${projectId}/tracks/${trackId}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
-      }).catch(console.error);
+      }).catch(saveFailed);
     }
   },
 
@@ -356,7 +437,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         api(`/projects/${projectId}/tracks/${track.id}`, {
           method: 'PATCH',
           body: JSON.stringify({ order_index: track.order_index }),
-        }).catch(console.error);
+        }).catch(saveFailed);
       }
     }
   },
@@ -377,3 +458,24 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 }));
+
+/** Saves every edit that is still waiting for its settle timer. */
+export function flushPendingEdits(): void {
+  for (const clipId of Array.from(pendingTransforms.keys())) useProjectStore.getState().commitClipTransform(clipId);
+  for (const [effectId, pending] of Array.from(pendingEffectSaves.entries())) {
+    window.clearTimeout(pending.timer);
+    pendingEffectSaves.delete(effectId);
+    pending.save();
+  }
+}
+
+// Undo/redo must see the latest edit as its own step, not race its timer
+commandManager.addFlusher(flushPendingEdits);
+// Best effort: don't lose the last tweak when the tab closes
+window.addEventListener('pagehide', flushPendingEdits);
+
+// Dev only: hot-swapping this module would create a second, empty store while
+// components still hold the old one. Reload the page instead.
+if (import.meta.hot) {
+  import.meta.hot.accept(() => window.location.reload());
+}

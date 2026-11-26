@@ -8,7 +8,8 @@ export function Playhead() {
   const zoomLevel = useUIStore((state) => state.zoomLevel);
   return (
     <div
-      className="absolute bottom-0 top-0 z-20 w-0.5 cursor-ew-resize bg-accent touch-none"
+      // 9px wide grab area around a 1px line
+      className="group absolute bottom-0 top-0 z-20 -ml-1 w-[9px] cursor-ew-resize touch-none"
       style={{ left: 120 + msToPixels(currentTimeMs, zoomLevel) }}
       onPointerDown={(event) => {
         const startX = event.currentTarget.parentElement?.getBoundingClientRect().left ?? 0;
@@ -16,6 +17,9 @@ export function Playhead() {
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', () => window.removeEventListener('pointermove', move), { once: true });
       }}
-    />
+    >
+      <div className="absolute left-0 top-0 h-2.5 w-[9px] rounded-b-sm bg-accent transition-transform group-hover:scale-110" />
+      <div className="absolute bottom-0 left-1 top-0 w-px bg-accent" />
+    </div>
   );
 }

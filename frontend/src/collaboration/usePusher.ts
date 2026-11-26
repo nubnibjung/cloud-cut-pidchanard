@@ -1,10 +1,10 @@
 import Pusher, { type Channel } from 'pusher-js';
 import { useEffect, useRef } from 'react';
+import { API_BASE } from '../services/config';
 import { useAuthStore } from '../state/authStore';
 
 const PUSHER_KEY = import.meta.env.VITE_PUSHER_KEY ?? '';
 const PUSHER_CLUSTER = import.meta.env.VITE_PUSHER_CLUSTER ?? 'mt1';
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
 
 let pusherInstance: Pusher | null = null;
 

@@ -1,16 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
-import { api } from '../../services/api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Film } from 'lucide-react';
+import { getAsset, peekAsset } from '../../services/assets';
+import { resolveUrl } from '../../services/config';
 import { usePlaybackStore } from '../../state/playbackStore';
 import { useProjectStore } from '../../state/projectStore';
 import { useUIStore } from '../../state/uiStore';
 import type { Asset, Clip } from '../../types';
 import { PlayerControls } from './PlayerControls';
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
-
-function resolveUrl(url: string) {
-  return url.startsWith('http') ? url : `${API_BASE}/${url.replace(/^\//, '')}`;
-}
+import { contentBox, hitsClip, TransformOverlay, type CanvasSize, type MediaSize } from './TransformOverlay';
 
 function buildCssFilter(effects: { type: string; params: { value: number }; enabled: boolean }[]): string {
   const parts: string[] = [];
@@ -37,9 +34,10 @@ interface LayerProps {
   isMuted: boolean;
   trackMuted: boolean;
   canvasScale: number;
+  onMediaSize(clipId: string, size: MediaSize): void;
 }
 
-function ClipLayer({ clip, asset, cssFilter, isPlaying, currentTimeMs, volume, isMuted, trackMuted, canvasScale }: LayerProps) {
+function ClipLayer({ clip, asset, cssFilter, isPlaying, currentTimeMs, volume, isMuted, trackMuted, canvasScale, onMediaSize }: LayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const url = resolveUrl(asset.original_url);
   const updateClip = useProjectStore((s) => s.updateClip);
@@ -87,7 +85,15 @@ function ClipLayer({ clip, asset, cssFilter, isPlaying, currentTimeMs, volume, i
   };
 
   if (asset.type === 'image') {
-    return <img src={url} alt="" style={sharedStyle} draggable={false} />;
+    return (
+      <img
+        src={url}
+        alt=""
+        style={sharedStyle}
+        draggable={false}
+        onLoad={(ev) => onMediaSize(clip.id, { width: ev.currentTarget.naturalWidth, height: ev.currentTarget.naturalHeight })}
+      />
+    );
   }
 
   return (
@@ -99,6 +105,7 @@ function ClipLayer({ clip, asset, cssFilter, isPlaying, currentTimeMs, volume, i
       className={asset.type === 'audio' ? '!opacity-0 !w-0 !h-0' : ''}
       playsInline
       onLoadedMetadata={(ev) => {
+        onMediaSize(clip.id, { width: ev.currentTarget.videoWidth, height: ev.currentTarget.videoHeight });
         const actual = Math.round(ev.currentTarget.duration * 1000);
         // Only fix clips that still have the default 5s duration (in_point=0, out_point≤5000)
         if (isFinite(actual) && actual > 5000 && clip.in_point_ms === 0 && clip.out_point_ms <= 5000) {
@@ -116,12 +123,33 @@ function ClipLayer({ clip, asset, cssFilter, isPlaying, currentTimeMs, volume, i
 }
 
 export function VideoPlayer() {
-  const { isPlaying, playbackSpeed, currentTimeMs, volume, isMuted, seek, pause } = usePlaybackStore();
-  const { selectedClipIds, hiddenTrackIds } = useUIStore();
-  const { clips, effects, tracks, project, updateClip } = useProjectStore();
+  const isPlaying = usePlaybackStore((s) => s.isPlaying);
+  const playbackSpeed = usePlaybackStore((s) => s.playbackSpeed);
+  const currentTimeMs = usePlaybackStore((s) => s.currentTimeMs);
+  const volume = usePlaybackStore((s) => s.volume);
+  const isMuted = usePlaybackStore((s) => s.isMuted);
+  const seek = usePlaybackStore((s) => s.seek);
+  const pause = usePlaybackStore((s) => s.pause);
+  const selectedClipIds = useUIStore((s) => s.selectedClipIds);
+  const hiddenTrackIds = useUIStore((s) => s.hiddenTrackIds);
+  const clips = useProjectStore((s) => s.clips);
+  const effects = useProjectStore((s) => s.effects);
+  const tracks = useProjectStore((s) => s.tracks);
+  const project = useProjectStore((s) => s.project);
+  const updateClip = useProjectStore((s) => s.updateClip);
   const [assetCache, setAssetCache] = useState<Record<string, Asset>>({});
+  const selectClip = useUIStore((s) => s.selectClip);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [canvasScale, setCanvasScale] = useState(1);
+  const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
+  const [mediaSizes, setMediaSizes] = useState<Record<string, MediaSize>>({});
+  const startMoveRef = useRef<((e: PointerEvent) => void) | null>(null);
+  const onMediaSize = useCallback((clipId: string, size: MediaSize) => {
+    if (!size.width || !size.height) return;
+    setMediaSizes((prev) =>
+      prev[clipId]?.width === size.width && prev[clipId]?.height === size.height ? prev : { ...prev, [clipId]: size },
+    );
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -130,6 +158,7 @@ export function VideoPlayer() {
     const updateCanvasScale = () => {
       const { width, height } = canvas.getBoundingClientRect();
       setCanvasScale(Math.min(width / 1920, height / 1080));
+      setCanvasSize({ width, height });
     };
     const observer = new ResizeObserver(updateCanvasScale);
     observer.observe(canvas);
@@ -144,7 +173,7 @@ export function VideoPlayer() {
     if (defaultClips.length === 0) return;
 
     for (const clip of defaultClips) {
-      api<Asset>(`/assets/${clip.asset_id}`).then((asset) => {
+      getAsset(clip.asset_id, project.id).then((asset) => {
         if (asset.type === 'image') return;
         // Use metadata if already available
         if (asset.metadata?.duration_ms && asset.metadata.duration_ms > 5000) {
@@ -208,8 +237,9 @@ export function VideoPlayer() {
     if (!project) return;
     for (const clip of activeLayers) {
       if (!assetCache[clip.asset_id]) {
-        api<Asset>(`/assets/${clip.asset_id}`).then((a) => {
-          setAssetCache((prev) => ({ ...prev, [a.id]: a }));
+        // Resolved from the project's shared asset list — no per-clip request
+        getAsset(clip.asset_id, project.id).then((a) => {
+          setAssetCache((prev) => (prev[a.id] ? prev : { ...prev, [a.id]: a }));
         }).catch(() => {});
       }
     }
@@ -221,17 +251,44 @@ export function VideoPlayer() {
 
   const totalMs = clips.reduce((m, c) => Math.max(m, c.track_position_ms + c.duration_ms), 0);
 
+  // Layers you can see and grab in the preview (audio has no picture)
+  const visualLayers = activeLayers.filter((c) => {
+    const asset = assetCache[c.asset_id] ?? peekAsset(c.asset_id);
+    return asset && asset.type !== 'audio';
+  });
+  const editable = selectedClip && !isPlaying && visualLayers.some((c) => c.id === selectedClip.id) ? selectedClip : null;
+
+  // Click a picture in the preview to select it — and keep holding to drag it right away
+  const onCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || isPlaying) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const hit = [...visualLayers].reverse().find((c) => hitsClip(px, py, contentBox(c, mediaSizes[c.id], canvasSize, canvasScale)));
+    if (!hit) { useUIStore.getState().deselectAll(); return; }
+    selectClip(hit.id);
+    const native = e.nativeEvent;
+    // The overlay for the newly selected clip mounts on the next frame. Only start
+    // dragging if the button is still held by then — a plain click just selects.
+    let released = false;
+    window.addEventListener('pointerup', () => { released = true; }, { once: true });
+    requestAnimationFrame(() => { if (!released) startMoveRef.current?.(native); });
+  };
+
   return (
-    <section className="flex h-full flex-col bg-[#101217]">
-      <div ref={canvasRef} className="relative min-h-0 flex-1 overflow-hidden bg-black">
+    <section className="flex h-full flex-col overflow-clip bg-canvas" aria-label="Preview">
+      <div ref={canvasRef} className="relative min-h-0 flex-1 overflow-hidden bg-black" onPointerDown={onCanvasPointerDown}>
         {activeLayers.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-600 select-none">
-            No clip at playhead
+          <div className="absolute inset-0 flex select-none flex-col items-center justify-center gap-2 text-fg-subtle">
+            <Film aria-hidden className="h-7 w-7 opacity-60" />
+            <p className="text-xs">
+              {clips.length === 0 ? 'Add a clip to the timeline to see it here' : 'Nothing at the playhead'}
+            </p>
           </div>
         )}
 
         {activeLayers.map((clip) => {
-          const asset = assetCache[clip.asset_id];
+          const asset = assetCache[clip.asset_id] ?? peekAsset(clip.asset_id);
           if (!asset) return null;
           const track = tracks.find((t) => t.id === clip.track_id);
           const clipEffects = effects[clip.id] ?? [];
@@ -250,9 +307,22 @@ export function VideoPlayer() {
               isMuted={isMuted}
               trackMuted={track?.is_muted ?? false}
               canvasScale={canvasScale}
+              onMediaSize={onMediaSize}
             />
           );
         })}
+
+        {editable && canvasSize.width > 0 && (
+          <TransformOverlay
+            key={editable.id}
+            clip={editable}
+            media={mediaSizes[editable.id]}
+            canvas={canvasSize}
+            canvasScale={canvasScale}
+            canvasEl={canvasRef.current}
+            startRef={startMoveRef}
+          />
+        )}
       </div>
       <PlayerControls totalMs={totalMs} />
     </section>

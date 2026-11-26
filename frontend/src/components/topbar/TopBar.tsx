@@ -1,14 +1,12 @@
-import { ArrowLeft, Download, Scissors, Undo2, Redo2, XCircle } from 'lucide-react';
+import { ArrowLeft, Download, Redo2, Undo2, Upload, XCircle } from 'lucide-react';
+import { APP_NAME, LogoMark } from '../ui/Logo';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../services/api';
+import { resolveUrl } from '../../services/config';
+import { commandManager } from '../../state/commandManager';
 import { useProjectStore } from '../../state/projectStore';
-import { commandManager } from '../shared/UndoHistory';
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
-
-function resolveUrl(url: string) {
-  return url.startsWith('http') ? url : `${API_BASE}/${url.replace(/^\//, '')}`;
-}
+import { AnimatedThemeToggler } from '../ui/AnimatedThemeToggler';
+import { Button, IconButton } from '../ui/Button';
 
 interface ExportJob {
   id: string;
@@ -176,64 +174,63 @@ export function TopBar({ onBack }: Props) {
   };
 
   return (
-    <div className="flex h-12 items-center justify-between border-b border-border bg-[#151820] px-4">
-      <div className="flex items-center gap-3">
+    <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-panel px-2 sm:gap-3 sm:px-3">
+      <div className="flex min-w-0 items-center gap-2">
         {onBack && (
-          <button onClick={onBack} className="rounded border border-border p-1.5 hover:bg-white/5" title="Back">
-            <ArrowLeft className="h-4 w-4" />
-          </button>
+          <IconButton label="Back to projects" onClick={onBack}>
+            <ArrowLeft aria-hidden className="h-4 w-4" />
+          </IconButton>
         )}
-        <Scissors className="h-5 w-5 text-accent" />
-        <span className="max-w-[200px] truncate text-sm font-semibold">{project?.name ?? 'CloudCut'}</span>
+        <LogoMark className="hidden h-5 w-5 text-accent sm:block" />
+        <h1 className="truncate text-sm font-semibold" title={project?.name}>{project?.name ?? APP_NAME}</h1>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-1 sm:gap-2">
         {error && (
-          <span
-            className="cursor-pointer text-xs text-red-400 hover:text-red-300"
-            title="Click to dismiss"
+          <button
+            type="button"
+            role="alert"
+            className="flex max-w-[35vw] items-center gap-1 truncate rounded-md px-2 py-1 text-xs text-danger hover:bg-danger/10 sm:max-w-xs"
+            title="Dismiss"
             onClick={() => setError('')}
           >
-            {error}
-          </span>
+            <span className="truncate">{error}</span>
+            <XCircle aria-hidden className="h-3.5 w-3.5 shrink-0" />
+          </button>
         )}
-        {progress && !error && <span className="text-xs text-slate-400">{progress}</span>}
+        {progress && !error && <span className="hidden text-xs tabular-nums text-fg-muted sm:block" role="status">{progress}</span>}
         {downloadUrl && !exporting && (
-          <button
-            className="flex items-center gap-1.5 rounded border border-emerald-700/60 px-3 py-1.5 text-sm font-medium text-emerald-300 hover:bg-emerald-900/20"
+          <Button
+            aria-label="Download export"
             onClick={() => downloadExport(downloadUrl).catch((err) => setError(err instanceof Error ? err.message : 'Download failed'))}
           >
-            <Download className="h-4 w-4" />
-            Download
-          </button>
+            <Download aria-hidden className="h-4 w-4 text-success" />
+            <span className="hidden sm:inline">Download</span>
+          </Button>
         )}
 
-        <button title="Undo (Ctrl+Z)" className="rounded border border-border p-2 hover:bg-white/5" onClick={() => commandManager.undo()}>
-          <Undo2 className="h-4 w-4" />
-        </button>
-        <button title="Redo (Ctrl+Shift+Z)" className="rounded border border-border p-2 hover:bg-white/5" onClick={() => commandManager.redo()}>
-          <Redo2 className="h-4 w-4" />
-        </button>
+        <div className="flex items-center">
+          <IconButton label="Undo" title="Undo (Ctrl+Z)" onClick={() => commandManager.undo()}>
+            <Undo2 aria-hidden className="h-4 w-4" />
+          </IconButton>
+          <IconButton label="Redo" title="Redo (Ctrl+Shift+Z)" onClick={() => commandManager.redo()}>
+            <Redo2 aria-hidden className="h-4 w-4" />
+          </IconButton>
+          <AnimatedThemeToggler className="h-8 w-8 rounded-md" />
+        </div>
 
         {exporting ? (
-          <button
-            onClick={cancelExport}
-            className="flex items-center gap-1.5 rounded border border-red-800/60 px-3 py-1.5 text-sm font-medium text-red-400 hover:bg-red-900/20"
-            title="Cancel export"
-          >
-            <XCircle className="h-4 w-4" />
-            Cancel
-          </button>
+          <Button variant="dangerOutline" aria-label="Cancel export" onClick={cancelExport}>
+            <XCircle aria-hidden className="h-4 w-4" />
+            <span className="hidden sm:inline">Cancel</span>
+          </Button>
         ) : (
-          <button
-            onClick={handleExport}
-            className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-sm font-medium text-black hover:opacity-90"
-          >
-            <Download className="h-4 w-4" />
-            {error ? 'Retry Export' : 'Export'}
-          </button>
+          <Button variant="primary" aria-label={error ? 'Retry export' : 'Export'} onClick={handleExport}>
+            <Upload aria-hidden className="h-4 w-4" />
+            <span className="hidden sm:inline">{error ? 'Retry export' : 'Export'}</span>
+          </Button>
         )}
       </div>
-    </div>
+    </header>
   );
 }

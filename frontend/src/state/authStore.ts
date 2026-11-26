@@ -31,3 +31,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ token: null, user: null });
   },
 }));
+
+// Dev only: hot-swapping this module would create a second, empty store while
+// components still hold the old one. Reload the page instead.
+if (import.meta.hot) {
+  import.meta.hot.accept(() => window.location.reload());
+}

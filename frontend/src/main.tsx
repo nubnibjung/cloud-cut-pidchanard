@@ -1,7 +1,14 @@
+import '@fontsource-variable/inter';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { startSessionKeepAlive, wakeServer } from './services/session';
+import './state/themeStore';
 import './styles.css';
+
+// Start waking the API before anything renders — it may be asleep
+wakeServer();
+startSessionKeepAlive();
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

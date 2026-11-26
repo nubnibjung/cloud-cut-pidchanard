@@ -46,6 +46,9 @@ pub struct ConfirmUpload {
     original_url: String,
     idempotency_key: String,
     duration_ms: Option<i64>,
+    /// The file name on the user's computer. Stored files are renamed to a UUID,
+    /// so without this the editor could only show "344f2c08-….webp".
+    original_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,11 +103,16 @@ pub async fn confirm_upload(
     let mut tx = state.pool.begin().await?;
 
     // If the client already probed the duration, mark ready immediately and skip extraction job
-    let (status, metadata) = if let Some(ms) = input.duration_ms {
+    let (status, mut metadata) = if let Some(ms) = input.duration_ms {
         ("ready", json!({ "duration_ms": ms }))
     } else {
         ("processing", json!({}))
     };
+    if let Some(name) = input.original_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        // Keep it short and free of path parts
+        let name: String = name.rsplit(['/', '\\']).next().unwrap_or(name).chars().take(200).collect();
+        metadata["original_name"] = json!(name);
+    }
 
     let asset_id = sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO assets (project_id, uploaded_by, type, original_url, status, metadata)

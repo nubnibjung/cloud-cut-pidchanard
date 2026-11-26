@@ -2,6 +2,61 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme ────────────────────────────────────────────────────────────────
+   Each colour is "R G B" so Tailwind can add opacity (bg-accent/10).
+   Dark is the default; <html data-theme="light"> switches the palette. */
+:root {
+  --c-canvas: 8 17 19;
+  --c-panel: 12 24 27;
+  --c-surface: 17 31 35;
+  --c-raised: 22 39 44;
+  --c-border: 30 50 55;
+  --c-border-strong: 47 74 80;
+  --c-fg: 236 246 245;
+  --c-fg-muted: 155 180 180;
+  --c-fg-subtle: 113 140 142;
+  --c-ink: 255 255 255;
+  --c-on-accent: 3 40 40;
+  --c-accent: 43 212 200;
+  --c-danger: 248 113 113;
+  --c-danger-solid: 220 38 38;
+  --c-success: 52 211 153;
+  --c-warning: 251 191 36;
+  --c-clip: 16 44 50;
+  --c-clip-hover: 20 56 63;
+  --c-clip-selected: 18 64 66;
+  --c-clip-border: 34 78 86;
+  --shadow-card: 0 24px 64px -24px rgb(0 0 0 / 0.7);
+  --shadow-menu: 0 12px 32px -8px rgb(0 0 0 / 0.6);
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --c-canvas: 240 247 247;
+  --c-panel: 255 255 255;
+  --c-surface: 246 251 251;
+  --c-raised: 255 255 255;
+  --c-border: 217 232 233;
+  --c-border-strong: 186 210 212;
+  --c-fg: 12 31 34;
+  --c-fg-muted: 64 92 96;
+  --c-fg-subtle: 102 128 132;
+  --c-ink: 8 47 52;
+  --c-on-accent: 255 255 255;
+  --c-accent: 13 148 148;
+  --c-danger: 220 38 38;
+  --c-danger-solid: 220 38 38;
+  --c-success: 5 150 105;
+  --c-warning: 180 83 9;
+  --c-clip: 214 240 240;
+  --c-clip-hover: 196 232 233;
+  --c-clip-selected: 178 233 228;
+  --c-clip-border: 140 205 207;
+  --shadow-card: 0 24px 64px -28px rgb(15 23 42 / 0.25);
+  --shadow-menu: 0 12px 32px -10px rgb(15 23 42 / 0.22);
+  color-scheme: light;
+}
+
 html,
 body,
 #root {
@@ -10,9 +65,10 @@ body,
 }
 
 body {
-  background: #111318;
-  color: #f7f8fb;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: rgb(var(--c-canvas));
+  color: rgb(var(--c-fg));
+  font-family: theme('fontFamily.sans');
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -21,44 +77,145 @@ select {
   font: inherit;
 }
 
-/* hide scrollbars globally but keep scrollability */
-* {
-  scrollbar-width: none;
+/* One focus ring for every interactive element, keyboard only */
+:focus-visible {
+  outline: 2px solid rgb(var(--c-accent));
+  outline-offset: 2px;
 }
-*::-webkit-scrollbar {
-  display: none;
+input:focus-visible,
+select:focus-visible {
+  outline-offset: 0;
 }
 
-/* Timeline scroll area — show a thin dark scrollbar */
-.timeline-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: #3a4050 transparent;
+/* Browsers repaint autofilled inputs with their own (blue/yellow) background.
+   Stretching that transition out indefinitely keeps our own field colours. */
+.auth-field:-webkit-autofill,
+.auth-field:-webkit-autofill:hover,
+.auth-field:-webkit-autofill:focus {
+  -webkit-text-fill-color: rgb(var(--c-fg));
+  caret-color: rgb(var(--c-fg));
+  transition: background-color 600000s 0s, color 600000s 0s;
 }
-.timeline-scroll::-webkit-scrollbar {
-  display: block;
+.auth-field:autofill {
+  transition: background-color 600000s 0s, color 600000s 0s;
+}
+
+/* Overlay-style scrollbars: thin, no arrow buttons, and invisible until the pointer
+   is over the scrollable area (or the area has keyboard focus).
+
+   Chrome/Edge: style with ::-webkit-scrollbar. Setting the standard
+   scrollbar-width/-color there would switch Chrome back to its native scrollbar,
+   which ignores these rules and draws arrows — so those are Firefox-only below. */
+*::-webkit-scrollbar {
   height: 8px;
   width: 8px;
 }
-.timeline-scroll::-webkit-scrollbar-track {
-  background: #14171d;
+*::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+  width: 0;
 }
-.timeline-scroll::-webkit-scrollbar-thumb {
-  background: #3a4050;
-  border-radius: 4px;
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
-.timeline-scroll::-webkit-scrollbar-thumb:hover {
-  background: #5a6070;
+*::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  background-clip: padding-box;
+  border: 2px solid transparent; /* inset the thumb so it reads as a slim pill */
+  border-radius: 999px;
 }
-.timeline-scroll::-webkit-scrollbar-corner {
-  background: #14171d;
+*:hover::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--c-border-strong));
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--c-fg-subtle));
+}
+*::-webkit-scrollbar-thumb:active {
+  background-color: rgb(var(--c-fg-muted));
+}
+
+/* Firefox has no ::-webkit-scrollbar; its thin scrollbar never shows arrows. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  *:hover,
+  *:focus-within {
+    scrollbar-color: rgb(var(--c-border-strong)) transparent;
+  }
+}
+
+/* Native sliders */
+input[type='range'] {
+  accent-color: rgb(var(--c-accent));
+  height: 16px;
+  cursor: pointer;
 }
 
 /* Asset-to-track drag highlight (set via setAttribute in AssetBrowser) */
-[data-asset-drag-over="ok"] {
-  background-color: rgba(52, 211, 153, 0.12);
-  outline: 1px solid rgba(52, 211, 153, 0.5);
+[data-asset-drag-over='ok'] {
+  background-color: rgb(var(--c-accent) / 0.12);
+  outline: 1px solid rgb(var(--c-accent) / 0.5);
 }
-[data-asset-drag-over="no"] {
+[data-asset-drag-over='no'] {
   background-color: rgba(239, 68, 68, 0.1);
   outline: 1px dashed rgba(239, 68, 68, 0.4);
+}
+
+/* ShimmeringText: a highlight band slides across text clipped to its glyphs */
+.shimmer-text {
+  background-image: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 35%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 65%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-sweep var(--shimmer-duration, 1.6s) linear infinite;
+}
+@keyframes shimmer-sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    background-image: none;
+    color: var(--shimmer-base);
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* Theme switch: AnimatedThemeToggler drives the reveal itself, so turn off the
+   default cross-fade and let the new snapshot sit on top of the old one. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-new(root) {
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

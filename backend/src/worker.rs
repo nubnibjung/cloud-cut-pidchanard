@@ -15,13 +15,25 @@ pub async fn run(pool: PgPool, config: Config) {
     reset_stuck_jobs(&pool).await;
 
     info!("Job worker started");
+    // Poll quickly while there is work, and back off while the queue is empty so an
+    // idle server isn't sending the database two queries a second around the clock.
+    let mut idle_delay = POLL_MIN;
     loop {
-        if let Err(e) = process_next_job(&pool, &config).await {
-            error!("Worker error: {e:#}");
+        match process_next_job(&pool, &config).await {
+            Ok(true) => idle_delay = POLL_MIN,
+            Ok(false) => idle_delay = (idle_delay * 2).min(POLL_MAX),
+            Err(e) => {
+                error!("Worker error: {e:#}");
+                idle_delay = POLL_MAX;
+            }
         }
-        sleep(Duration::from_millis(500)).await;
+        sleep(idle_delay).await;
     }
 }
+
+const POLL_MIN: Duration = Duration::from_millis(500);
+/// Upper bound on how long a newly queued job (e.g. an export) can wait to be picked up.
+const POLL_MAX: Duration = Duration::from_secs(2);
 
 async fn reset_stuck_jobs(pool: &PgPool) {
     // processing_jobs: reset to queued so they're retried
@@ -86,7 +98,8 @@ fn ffprobe_path() -> String {
     std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string())
 }
 
-async fn process_next_job(pool: &PgPool, config: &Config) -> anyhow::Result<()> {
+/// Claims and runs the oldest runnable job. Returns whether there was one.
+async fn process_next_job(pool: &PgPool, config: &Config) -> anyhow::Result<bool> {
     let row = sqlx::query(
         "UPDATE processing_jobs
          SET status = 'processing', attempts = attempts + 1, updated_at = now()
@@ -105,7 +118,7 @@ async fn process_next_job(pool: &PgPool, config: &Config) -> anyhow::Result<()> 
     .fetch_optional(pool)
     .await?;
 
-    let Some(row) = row else { return Ok(()); };
+    let Some(row) = row else { return Ok(false); };
 
     let job_id: Uuid  = row.try_get("id")?;
     let kind: String  = row.try_get("kind")?;
@@ -139,7 +152,7 @@ async fn process_next_job(pool: &PgPool, config: &Config) -> anyhow::Result<()> 
         }
     }
 
-    Ok(())
+    Ok(true)
 }
 
 // ── extract_metadata ──────────────────────────────────────────────────────────
@@ -160,7 +173,8 @@ async fn job_extract_metadata(pool: &PgPool, payload: &serde_json::Value) -> any
     };
 
     sqlx::query(
-        "UPDATE assets SET status = 'ready', metadata = $2, updated_at = now() WHERE id = $1",
+        // Merge, so fields set at upload time (e.g. original_name) are kept
+        "UPDATE assets SET status = 'ready', metadata = COALESCE(metadata, '{}'::jsonb) || $2, updated_at = now() WHERE id = $1",
     )
     .bind(asset_id)
     .bind(&metadata)

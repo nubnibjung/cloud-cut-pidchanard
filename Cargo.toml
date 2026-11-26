@@ -25,7 +25,7 @@ sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "uuid", "chro
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "fs", "compression-gzip", "compression-br", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = "5"

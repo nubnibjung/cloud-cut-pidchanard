@@ -1,6 +1,10 @@
-import { Upload, X } from 'lucide-react';
+import { AlertCircle, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { api } from '../../services/api';
+import { API_BASE } from '../../services/config';
+import { useAuthStore } from '../../state/authStore';
+import { Spinner } from '../ui/Feedback';
+import { ShimmeringText } from '../ui/ShimmeringText';
 import type { Asset } from '../../types';
 
 const ACCEPT: Record<string, string> = {
@@ -44,7 +48,7 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
 
   const upload = async (file: File) => {
     if (!projectId || projectId === 'project-seed') {
-      setError('Open a real project first');
+      setError("The project hasn't finished loading. Wait a moment, or reload the page.");
       return;
     }
     setError(null);
@@ -57,10 +61,9 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
       // 2. Upload file to backend
       const form = new FormData();
       form.append('file', file);
-      const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
       const uploadRes = await fetch(`${API_BASE}/upload`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${localStorage.getItem('cc_token') ?? ''}` },
+        headers: { Authorization: `Bearer ${useAuthStore.getState().token ?? ''}` },
         body: form,
       });
       if (!uploadRes.ok) throw new Error(await uploadRes.text());
@@ -77,6 +80,7 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
           asset_type: guessType(file),
           original_url: url,
           idempotency_key: assetKey,
+          original_name: file.name,
           ...(durationMs ? { duration_ms: durationMs } : {}),
         }),
       });
@@ -87,7 +91,7 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
         type: guessType(file),
         original_url: url,
         status: durationMs ? 'ready' : 'processing',
-        metadata: durationMs ? { duration_ms: durationMs } : {},
+        metadata: { original_name: file.name, ...(durationMs ? { duration_ms: durationMs } : {}) },
       };
 
       onUploaded(newAsset);
@@ -105,21 +109,32 @@ export function AssetUpload({ projectId, typeFilter = 'all', onUploaded }: Props
   };
 
   return (
-    <div className="border-b border-border p-2">
-      <input ref={inputRef} type="file" accept={ACCEPT[typeFilter] ?? ACCEPT.all} className="hidden" onChange={onFileChange} />
+    <div className="shrink-0 p-2">
+      <input ref={inputRef} type="file" accept={ACCEPT[typeFilter] ?? ACCEPT.all} className="hidden" tabIndex={-1} aria-hidden onChange={onFileChange} />
       <button
-        className="flex w-full items-center justify-center gap-2 rounded border border-dashed border-border py-2 text-xs text-slate-400 hover:border-accent hover:text-accent"
+        type="button"
+        className="group/upload flex w-full items-center gap-2.5 rounded-lg border border-dashed border-border-strong p-1.5 text-left transition-colors hover:border-accent/70 hover:bg-accent/[0.06] disabled:cursor-progress"
         onClick={() => inputRef.current?.click()}
-        disabled={!!progress}
+        disabled={!!progress || !projectId}
+        aria-busy={!!progress}
       >
-        <Upload className="h-3.5 w-3.5" />
-        {progress ?? 'Upload file'}
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-ink/[0.06] text-fg-muted transition-colors group-hover/upload:bg-accent/15 group-hover/upload:text-accent">
+          {progress ? <Spinner className="h-4 w-4" /> : <Upload aria-hidden className="h-4 w-4" />}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-xs font-semibold text-fg">
+            {progress ? <ShimmeringText text={progress} color="rgb(var(--c-fg-muted))" /> : 'Upload media'}
+          </span>
+          <span className="block truncate text-2xs text-fg-subtle">
+            {typeFilter === 'all' ? 'Video, audio or images' : `${typeFilter.charAt(0).toUpperCase()}${typeFilter.slice(1)} files`}
+          </span>
+        </span>
       </button>
       {error && (
-        <div className="mt-1 flex items-center gap-1 text-[11px] text-red-400">
-          <X className="h-3 w-3 shrink-0" />
-          <span className="truncate">{error}</span>
-        </div>
+        <p className="mt-1.5 flex items-start gap-1 text-2xs text-danger" role="alert">
+          <AlertCircle aria-hidden className="mt-px h-3 w-3 shrink-0" />
+          <span className="min-w-0 break-words">{error}</span>
+        </p>
       )}
     </div>
   );

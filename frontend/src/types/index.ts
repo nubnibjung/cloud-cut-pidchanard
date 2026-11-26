@@ -16,7 +16,7 @@ export interface Asset {
   type: AssetType;
   original_url: string;
   status: 'uploading' | 'processing' | 'ready' | 'failed';
-  metadata: { duration_ms?: number; thumbnail?: string };
+  metadata: { duration_ms?: number; thumbnail?: string; original_name?: string };
 }
 
 export interface Track {

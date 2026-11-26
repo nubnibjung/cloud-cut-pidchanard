@@ -1,9 +1,13 @@
 import { Eye, EyeOff, GripVertical, Lock, Unlock, Volume2, VolumeX } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { api } from '../../services/api';
+import { API_BASE, assetName } from '../../services/config';
+import { useAuthStore } from '../../state/authStore';
 import { useProjectStore } from '../../state/projectStore';
+import { toast } from '../../state/toastStore';
 import { useUIStore } from '../../state/uiStore';
 import type { Asset, Clip, Track } from '../../types';
+import { cn } from '../../utils/cn';
 import { TimelineClip } from './TimelineClip';
 
 interface Props {
@@ -19,8 +23,11 @@ export function TimelineTrack({ track, clips }: Props) {
   const addClip = useProjectStore((s) => s.addClip);
   const updateTrack = useProjectStore((s) => s.updateTrack);
   const reorderTrack = useProjectStore((s) => s.reorderTrack);
-  const { toggleTrackHidden, hiddenTrackIds, zoomLevel, pendingAsset, setPendingAsset } = useUIStore();
-  const hidden = hiddenTrackIds.has(track.id);
+  const toggleTrackHidden = useUIStore((s) => s.toggleTrackHidden);
+  const hidden = useUIStore((s) => s.hiddenTrackIds.has(track.id));
+  const zoomLevel = useUIStore((s) => s.zoomLevel);
+  const pendingAsset = useUIStore((s) => s.pendingAsset);
+  const setPendingAsset = useUIStore((s) => s.setPendingAsset);
 
   /* ── drag-and-drop from Asset Browser or Local File ──────────────────── */
   const guessType = (file: File): 'video' | 'audio' | 'image' => {
@@ -51,7 +58,7 @@ export function TimelineTrack({ track, clips }: Props) {
     addClip({
       track_id: track.id,
       asset_id: asset.id,
-      name: asset.original_url.split('/').pop() ?? 'Clip',
+      name: assetName(asset),
       track_position_ms: positionMs,
       in_point_ms: 0,
       out_point_ms: durationMs,
@@ -120,10 +127,9 @@ export function TimelineTrack({ track, clips }: Props) {
       try {
         const form = new FormData();
         form.append('file', file);
-        const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
         const uploadRes = await fetch(`${API_BASE}/upload`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${localStorage.getItem('cc_token') ?? ''}` },
+          headers: { Authorization: `Bearer ${useAuthStore.getState().token ?? ''}` },
           body: form,
         });
         if (!uploadRes.ok) throw new Error(await uploadRes.text());
@@ -137,6 +143,7 @@ export function TimelineTrack({ track, clips }: Props) {
             asset_type: guessType(file),
             original_url: url,
             idempotency_key: assetKey,
+            original_name: file.name,
           }),
         });
 
@@ -150,7 +157,7 @@ export function TimelineTrack({ track, clips }: Props) {
           out_point_ms: durationMs,
         });
       } catch (err) {
-        console.error('Failed to upload dropped file:', err);
+        toast.fromError('Could not upload the dropped file')(err);
       }
       return;
     }
@@ -175,56 +182,66 @@ export function TimelineTrack({ track, clips }: Props) {
     }
   };
 
-  const iconBtn = 'rounded p-0.5 hover:bg-white/10 transition-colors cursor-pointer';
+  // 22px targets: the most that fits beside the label in the 120px header
+  const iconBtn = 'flex h-[22px] w-[22px] items-center justify-center rounded transition-colors hover:bg-ink/10 hover:text-fg';
 
   return (
     <div
-      className={[
+      className={cn(
         'grid h-16 grid-cols-[120px_1fr] border-b border-border',
-        trackDragOver ? 'bg-accent/10 outline outline-1 outline-accent/50' : '',
-      ].join(' ')}
+        trackDragOver && 'bg-accent/10 outline outline-1 outline-accent/50',
+      )}
       onDragOver={onTrackDragOver}
       onDragLeave={onTrackDragLeave}
       onDrop={onTrackDrop}
     >
       {/* ── Track header ──────────────────────────────────────────────── */}
       <div
-        className="sticky left-0 z-[5] flex items-center justify-between border-r border-border bg-[#171b23] px-1.5"
+        className="sticky left-0 z-[5] flex items-center justify-between border-r border-border bg-panel pl-1 pr-0.5"
         data-allow-native-drag="true"
         draggable={true}
         onDragStart={onTrackDragStart}
         onDragEnd={() => setTrackDragOver(false)}
         title="Drag to reorder track"
       >
-        <div className="flex min-w-0 items-center gap-1.5">
-          <GripVertical className="h-3.5 w-3.5 shrink-0 cursor-grab text-slate-500 active:cursor-grabbing" />
-          <div className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: track.color }} />
-          <span className="truncate text-xs font-medium">{track.label}</span>
+        <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+          <GripVertical aria-hidden className="h-3.5 w-3 shrink-0 cursor-grab text-fg-subtle active:cursor-grabbing" />
+          <div aria-hidden className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: track.color }} />
+          <span className="whitespace-nowrap text-xs font-medium">{track.label}</span>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5 text-slate-400">
+        <div className="flex shrink-0 items-center text-fg-muted">
           <button
-            className={`${iconBtn} ${track.is_locked ? 'text-yellow-400' : ''}`}
+            type="button"
+            className={cn(iconBtn, track.is_locked && 'text-warning')}
+            aria-label={`${track.is_locked ? 'Unlock' : 'Lock'} track ${track.label}`}
+            aria-pressed={track.is_locked}
             title={track.is_locked ? 'Unlock' : 'Lock'}
             draggable={false}
             onClick={() => updateTrack(track.id, { is_locked: !track.is_locked })}
           >
-            {track.is_locked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+            {track.is_locked ? <Lock aria-hidden className="h-3.5 w-3.5" /> : <Unlock aria-hidden className="h-3.5 w-3.5" />}
           </button>
           <button
-            className={`${iconBtn} ${track.is_muted ? 'text-yellow-400' : ''}`}
+            type="button"
+            className={cn(iconBtn, track.is_muted && 'text-warning')}
+            aria-label={`${track.is_muted ? 'Unmute' : 'Mute'} track ${track.label}`}
+            aria-pressed={track.is_muted}
             title={track.is_muted ? 'Unmute' : 'Mute'}
             draggable={false}
             onClick={() => updateTrack(track.id, { is_muted: !track.is_muted })}
           >
-            {track.is_muted ? <VolumeX className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
+            {track.is_muted ? <VolumeX aria-hidden className="h-3.5 w-3.5" /> : <Volume2 aria-hidden className="h-3.5 w-3.5" />}
           </button>
           <button
-            className={`${iconBtn} ${hidden ? 'text-slate-600' : ''}`}
+            type="button"
+            className={cn(iconBtn, hidden && 'text-warning')}
+            aria-label={`${hidden ? 'Show' : 'Hide'} track ${track.label}`}
+            aria-pressed={hidden}
             title={hidden ? 'Show' : 'Hide'}
             draggable={false}
             onClick={() => toggleTrackHidden(track.id)}
           >
-            {hidden ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+            {hidden ? <EyeOff aria-hidden className="h-3.5 w-3.5" /> : <Eye aria-hidden className="h-3.5 w-3.5" />}
           </button>
         </div>
       </div>
@@ -233,11 +250,12 @@ export function TimelineTrack({ track, clips }: Props) {
       <div
         ref={dropRef}
         data-track-id={track.id}
-        className={[
-          'relative min-w-0',
-          dragOver ? 'bg-accent/15 outline outline-1 outline-accent/50' : '',
-          track.is_locked ? 'opacity-50 pointer-events-none' : '',
-        ].join(' ')}
+        className={cn(
+          'relative min-w-0 bg-ink/[0.015]',
+          dragOver && 'bg-accent/15 outline outline-1 outline-accent/50',
+          pendingAsset && !track.is_locked && 'cursor-copy',
+          track.is_locked && 'pointer-events-none opacity-50',
+        )}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
@@ -249,14 +267,14 @@ export function TimelineTrack({ track, clips }: Props) {
         ))}
 
         {hidden && (
-          <span className="pointer-events-none absolute inset-0 flex select-none items-center pl-3 text-[11px] italic text-slate-600">
+          <span className="pointer-events-none absolute inset-0 flex select-none items-center pl-3 text-2xs text-fg-subtle">
             Hidden
           </span>
         )}
 
         {!hidden && clips.length === 0 && !dragOver && (
-          <span className="pointer-events-none absolute inset-0 flex select-none items-center pl-3 text-[11px] text-slate-600">
-            Drop asset here
+          <span className="pointer-events-none absolute inset-0 flex select-none items-center pl-3 text-2xs text-fg-subtle">
+            Drop {track.type === 'audio' ? 'audio' : 'video or images'} here
           </span>
         )}
 

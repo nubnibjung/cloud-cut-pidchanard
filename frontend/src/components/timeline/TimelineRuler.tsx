@@ -23,17 +23,18 @@ export function TimelineRuler({ durationMs }: { durationMs: number }) {
 
   return (
     <div
-      className="sticky top-0 z-10 grid h-7 grid-cols-[120px_1fr] border-b border-border bg-[#14171d]"
+      className="sticky top-0 z-10 grid h-7 grid-cols-[120px_1fr] border-b border-border bg-panel"
       style={{ minWidth: 120 + totalWidth }}
+      aria-hidden
     >
-      <div className="sticky left-0 z-[5] border-r border-border bg-[#14171d]" />
-      <div className="relative text-[10px] text-slate-500 select-none">
+      <div className="sticky left-0 z-[5] border-r border-border bg-panel" />
+      <div className="relative select-none text-2xs tabular-nums text-fg-subtle">
         {Array.from({ length: count }, (_, i) => {
           const ms = i * majorStep;
           const x = msToPixels(ms, zoomLevel);
           return (
             <div key={ms} className="absolute top-0 h-full" style={{ left: x }}>
-              <div className="absolute top-0 h-2 w-px bg-[#3a4050]" />
+              <div className="absolute top-0 h-2 w-px bg-border-strong" />
               <span className="absolute top-2 ml-1 leading-none">{fmtRuler(ms)}</span>
             </div>
           );

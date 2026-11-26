@@ -37,10 +37,17 @@ impl IntoResponse for AppError {
             Self::Validation(_) => (StatusCode::BAD_REQUEST, "Validation"),
             Self::Database(_) | Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal"),
         };
+        // Client-facing errors carry a human message ("Only the owner can delete a
+        // workspace") — send it. Server-side failures stay generic so database or
+        // internal details never reach the browser.
+        let message = match self {
+            Self::Forbidden(message) | Self::NotFound(message) | Self::Validation(message) if !message.is_empty() => message,
+            other => other.to_string(),
+        };
         let body = ErrorBody {
             status_code: status.as_u16(),
             error: error.to_string(),
-            message: self.to_string(),
+            message,
             request_id: "req_unavailable".to_string(),
         };
         (status, Json(body)).into_response()
